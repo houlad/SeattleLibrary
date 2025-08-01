@@ -1,0 +1,226 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+
+#Loading Packages and Connecting to the local duckdb
+TODO: Figure out code chunk options. If possible, figure out how to default some of those
+options into the yaml header.
+```{r}
+library(tidyverse)
+library(duckdb)
+library(duckplyr)
+source("helper_functions.R")
+
+#Connect to local duckdb
+con <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
+```
+
+I don't think any of this will be run when generating the blog post. I think I'll have
+already rendered all the plots and figures since I've been dealing with a 30gb file.
+```{r, eval = FALSE}
+#initial reading of the csv file. Have to manually specify types because ID
+#randomly(?) has a couple values with characters in it
+duckdb_read_csv(con, "checkouts", "/Users/athou/Downloads/Checkouts_By_Title__Physical_Items__20250312.csv",
+                col.types = c(
+                  ID = "VARCHAR", # some id's have characters in them for some reason
+                  CheckoutYear = "BIGINT",
+                  BibNumber = "BIGINT",
+                  ItemBarcode = "VARCHAR",
+                  ItemType = "VARCHAR",
+                  Collection = "VARCHAR",
+                  CallNumber = "VARCHAR",
+                  ItemTitle = "VARCHAR",
+                  Subjects = "VARCHAR",
+                  CheckoutDateTime = "DATETIME"
+                ))
+```
+
+```{r}
+type_data <- read_csv("/Users/athou/Downloads/Integrated_Library_System__ILS__Data_Dictionary_20250702.csv") |> 
+  janitor::clean_names()
+checkouts <- tbl(con, 'checkouts')
+checkouts |> 
+  summarise(total = n())
+```
+
+#Initial glance at what sort of items are being checked out
+This data set is huge. There are over 120 million items checked out since April 2005. 
+After looking at the [data dictionary](https://data.seattle.gov/Community-and-Culture/Checkouts-By-Title-Physical-Items-/5src-czff/about_data) I can see that there is a whole range of items being checked out, everything from
+physical books to laptops and dvds. Let's just take a quick look and see what this breakdown
+looks like.
+```{r}
+count_of_itemtypes <- checkouts |> 
+  count(ItemType) |> 
+  arrange(desc(n)) |> 
+  collect() 
+
+count_of_itemtypes |> 
+  ggplot(aes(x = n, y = fct_reorder(ItemType, n)))+
+  geom_col()
+
+head(count_of_itemtypes)
+tail(count_of_itemtypes)
+count_of_itemtypes |> 
+  mutate(cum_percent = cumsum(n)/sum(n))
+```
+
+So we can already tell that the top 10 ItemType represent almost 99% of the total
+checkedout items. I'm not sure about you,  but I find it hard to work with values like
+'acbk', so let's try to give them more meaningful names by joining with the [lookup table](https://data.seattle.gov/Community-and-Culture/Integrated-Library-System-ILS-Data-Dictionary/pbt3-ytbc/about_data)
+for itemtypes the library system provides.
+
+```{r}
+itemtype_info_and_count <- count_of_itemtypes |> 
+  left_join(type_data, by = join_by(ItemType == code))
+
+```
+
+So this is about what I would expect. People mainly checkout books from the library,
+but a surprisingly large number of checkouts are dvds or cds. Let's just take a look 
+at the top 10 item categories and see how their checkout numbers have varied over
+this ~20 year period.
+```{r}
+
+top_ten_itemtypes <- checkouts |>
+  group_by(ItemType, CheckoutYear) |> 
+  summarise(totals = n()) |> 
+  collect() |> 
+  #filter to just the top 10 itemtypes first
+  filter(ItemType %in% count_of_itemtypes$ItemType[1:10])
+
+top_ten_itemtypes |> 
+  ggplot(aes(x = CheckoutYear, y = totals, color = ItemType))+
+  geom_line()
+```
+
+So a couple things are obvious. 2020 was a huge shock to the library system and checkout
+numbers haven't recovered since. Additionally, VHS checkouts appear to have stopped
+entirely. Perhaps more interesting, there is a downward trend, even before COVID
+in adult book checkouts which perhaps can be explained by ebooks rising in popularity. 
+I won't delve into that here, but an interesting nuance to that is that juvenile book
+checkouts actually rose from 2005 to 2019 and have recovered to a greater degree
+than the adult books. Maybe younger people don't have as easy of access to ebooks?
+
+
+A potentially interesting area would be to look at things like computer/tablet rentals
+have increased over the years. Just with a quick plot it looks like they already peaked,
+but laptops at least still have a sizeable number of checkouts every year.
+```{r}
+checkouts |> 
+  group_by(ItemType, CheckoutYear) |> 
+  summarise(totals = n()) |> 
+  collect() |> 
+  filter(ItemType %in% c("alaptop", "atablet")) |> 
+           ggplot(aes(x = CheckoutYear, y = totals, color = ItemType))+
+           geom_line()
+```
+
+
+Ok, now that I know what's included in the checkouts, let's dive into books, the
+area I'm actually interested in.
+
+#What are they most checked out books of the entire dataset? What about every year?
+
+##What do book checkouts look like over the years?
+We've already seen checkouts generally have been declining, but let's take a look
+at just our book categories.
+```{r}
+total_checkouts_by_year <- checkouts |> 
+  filter(!is.na(ItemType), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  group_by(CheckoutYear, ItemType) |> 
+  summarise(totals = n()) |> 
+  arrange(desc(totals)) |> 
+  collect()
+
+totals <- total_checkouts_by_year |> 
+  summarise(overall_counts = sum(totals))
+total_checkouts_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = totals))+
+  geom_line(aes(color = ItemType))+
+  geom_line(data = totals, aes(x = CheckoutYear, y = overall_counts))
+```
+
+## Most checked out books of full dataset
+So there is some obvious time bias here--the longer a book has been around, the more 
+checkouts it can have. We aren't going to look into that just yet(if at all). Here
+we just want to see the most checked out books.
+```{r}
+top_checkouts_all_time <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType %in% c('acbk', 'jcbk', 'ahbk', 'pkbknh',
+                                            'bcbk', 'arbk')) |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total_checkouts = n()) |> 
+  arrange(desc(total_checkouts)) |> 
+  collect() 
+   
+
+#Let's look at the top 25 maybe?
+top_checkouts_all_time |> 
+  filter(ItemType %in% c("acbk", 'jcbk')) |> 
+  group_by(ItemType) |> 
+  slice_head(n = 25 ) |> 
+  ggplot(aes(x = total_checkouts, y = fct_reorder(ItemTitle, total_checkouts)))+
+  geom_col()+
+  facet_wrap(~ItemType, scales = 'free_y')
+```
+
+
+It appears that the top juvenile books are checked out more than the top adult books.
+Is there are way we can tease that apart a little bit?
+```{r}
+#TODO THEMING and plot cleanup
+checkout_percentages <- top_checkouts_all_time |> 
+  filter(ItemType %in% c("acbk", "jcbk")) |> 
+  group_by(ItemType) |> 
+  mutate(percent_of_total = cumsum(total_checkouts)/sum(total_checkouts)) 
+
+checkout_percentages|> 
+  ggplot(aes(x = seq_along(ItemType), y = percent_of_total))+
+  geom_line()+
+  facet_wrap(~ItemType)+
+  scale_x_continuous(labels = scales::label_number())+
+  geom_vline(xintercept = 200000, color = 'red')
+```
+This quick little check shows that with the top 200k adult books, you represent ~75%
+of the total amount of checkouts, but with juvenile, that 200k represents over 90%
+of the checkouts. So the tail of the adult section is much longer than the juvenile 
+section, which you can see from the simple plot.
+
+
+One potential complication - pkbknh or Peak Pics are a collection of new and popular
+books with no wait or holds. But these often overlap with acbk books. So you end up with 
+two counts of the same book, when in many respects they should be added together and treated as one.
+Let's try doing that to see if anything changes.
+```{r}
+top_checkouts_all_time |> 
+  mutate(title_checkouts = sum(total_checkouts)) |> 
+  filter(ItemType %in% c("acbk", "jcbk")) |> 
+  group_by(ItemType) |> 
+  mutate(percent_of_total = cumsum(title_checkouts)/sum(title_checkouts)) |> 
+  ggplot(aes(x = seq_along(ItemType), y = percent_of_total))+
+  geom_line()+
+  facet_wrap(~ItemType)+
+  scale_x_continuous(labels = scales::label_number())+
+  geom_vline(xintercept = 200000, color = 'red')
+```
+
+So after adding the Peak Picks books to the other acbk or jcbk books, it doesn't 
+really look like anything changes in terms of how much of the distribution 200k
+books gets you for adult and juvenile books.
+
+##Most checked out books by year.
+
+Let's start with 5 books a year.
+```{r}
+top_checkouts_all_time |> 
+  checkouts |> 
+  filter(!is.na(ItemTitle), ItemType %in% c('acbk', 'jcbk', 'ahbk', 'pkbknh',
+                                            'bcbk', 'arbk')) |> 
+```
+
+

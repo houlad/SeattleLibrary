@@ -1,0 +1,588 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r}
+library(tidyverse)
+library(duckdb)
+library(duckplyr)
+source("helper_functions.R")
+```
+
+```{r}
+#Connect to local duckdb
+con <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
+
+#initial reading of the csv file. Have to manually specify types because ID
+#randomly(?) has a couple values with characters in it
+duckdb_read_csv(con, "checkouts", "/Users/athou/Downloads/Checkouts_By_Title__Physical_Items__20250312.csv",
+                col.types = c(
+                  ID = "VARCHAR", # some id's have characters in them for some reason
+                  CheckoutYear = "BIGINT",
+                  BibNumber = "BIGINT",
+                  ItemBarcode = "VARCHAR",
+                  ItemType = "VARCHAR",
+                  Collection = "VARCHAR",
+                  CallNumber = "VARCHAR",
+                  ItemTitle = "VARCHAR",
+                  Subjects = "VARCHAR",
+                  CheckoutDateTime = "DATETIME"
+                ))
+```
+
+
+```{r}
+# https://data.seattle.gov/Community-and-Culture/Integrated-Library-System-ILS-Data-Dictionary/pbt3-ytbc/about_data
+# ItemType and Collection are defined in the ILS data dictionary. It is quite extensive in that way 
+# it's broken down
+type_data <- read_csv("/Users/athou/Downloads/Integrated_Library_System__ILS__Data_Dictionary_20250702.csv") |> 
+  janitor::clean_names()
+
+checkouts <- tbl(con, 'checkouts')
+
+# quick breakdown of what types of physical things are being checked out eg
+# books, dvds, vhs, etc
+count_of_itemtypes_by_year <- checkouts |> 
+  group_by(CheckoutYear) |> 
+  count(ItemType) |> 
+  arrange(desc(n)) |> 
+  collect()
+
+count_of_itemtypes_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = n, fill = ItemType))+
+  geom_col()
+
+#total number of of physical items checked out each year. Dropped in 2020(expected),
+#but has not yet come close to recovery. Perhaps physical checkouts got replaced with
+#digital ones?
+checkouts_by_year <- checkouts |> 
+  count(CheckoutYear) |> 
+  arrange(desc(n)) |> 
+  collect()
+
+checkouts_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = n))+
+  geom_col()
+```
+
+
+#How many unique physical items are there to checkout in the seattle public library system? A little over 6 million
+```{r}
+unique_items <- checkouts |> 
+  count(ItemBarcode) |> 
+  arrange(desc(n)) |> 
+  collect()
+```
+
+#Checkouts by itemtype over time
+Could potentially make an interesting gif or something out of the dropout(or introduction) of certain item
+categories over the years.
+```{r}
+checkouts_by_itemtype <- checkouts |> 
+  group_by(ItemType, CheckoutYear) |>
+  summarise(total = n()) |> 
+  arrange(CheckoutYear, desc(total)) |> 
+  collect()
+  
+library(ggrepel)
+checkouts_by_itemtype |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  slice_head(n = 10) |> 
+  ungroup() |> 
+  mutate(label = if_else(CheckoutYear == max(CheckoutYear), as.character(ItemType), NA_character_)) |> 
+  ggplot(aes(x = CheckoutYear, y = total, color = ItemType))+
+  geom_line()+
+  geom_label_repel(aes(label = label, na.rm = TRUE))+
+  theme(legend.position = 'none')
+
+```
+
+
+#Checkouts by age group over time
+```{r}
+years <- c(2006:2024)
+test_age_groups <- map(years, ~get_year_and_add_age_group(checkouts, CheckoutYear == .x))
+
+age_group_df <- bind_rows(test_age_groups)
+
+age_group_df |> 
+  filter(!is.na(age)) |> 
+  group_by(CheckoutYear, age) |> 
+  summarise(totals = n()) |> 
+  ggplot(aes(CheckoutYear, totals, fill = age))+
+  geom_col(position = 'dodge')
+
+```
+
+
+Itemtype appears to be the more general categorization. Collection has hundreds of 
+values 
+```{r}
+teen_over_1000 <- checkouts |>
+  filter_by_condition()
+  group_by(Collection) |> 
+  summarise(total_checkout = n()) |> 
+  filter(total_checkout > 1000)
+
+teen_books |> 
+  filter(Collection %in% teen_over_1000$Collection) |> 
+  group_by(CheckoutYear, Collection) |> 
+  summarise(total_checkout = n()) |> 
+  ggplot(aes(x = CheckoutYear, y = total_checkout))+
+  geom_col()+
+  facet_wrap(~Collection, scales = 'free_y')
+```
+
+
+```{r}
+checkouts |> 
+  count(CallNumber) |> 
+  arrange(desc(n))
+
+#unique itemtypes in full dataset
+unique_itemtypes <- checkouts |> 
+  select(ItemType) |> 
+  distinct(ItemType) |> 
+  collect()
+
+unique_collection <- checkouts |> 
+  select(Collection) |> 
+  distinct(Collection) |> 
+  collect()
+
+unique_itemtypes[unique_itemtypes$ItemType %in% unique_collection$Collection,]
+
+unique_collection[unique_collection$Collection %in% unique_itemtypes$ItemType,]
+
+type_data |> 
+  janitor::get_dupes(code)
+
+#itemtypes associated with fiction
+fiction_typecodes <- type_data |> 
+  filter(category_group == 'Fiction') |> 
+  filter(code %in% unique_itemtypes$ItemType) 
+
+fiction_collections <- type_data |> 
+  filter(category_group == 'Fiction') |> 
+  filter(code %in% unique_collection$Collection)
+
+type_data |> 
+  filter(code_type == 'ItemType') |> 
+  filter(!(code %in% unique_itemtypes$ItemType)) |> 
+  View()
+
+checkouts |> 
+  filter(ItemType == "drmfmnp")
+
+
+
+```
+
+#What are the interesting checkout patterns specific to dates/times?
+```{r}
+month_day_2023 <- filter_by_condition(checkouts, CheckoutYear == 2023) |> 
+  mutate(month = month(CheckoutDateTime), 
+         dow = wday(CheckoutDateTime, label = TRUE))
+
+checkouts |> 
+  count(CheckoutYear) |> 
+  ggplot(aes(x = CheckoutYear, y = n))+
+  geom_col()
+
+month_day_2023 |> 
+  count(month) |> 
+  ggplot(aes(x = as.factor(month), y = n))+
+    geom_col()
+
+month_day_2023 |> 
+  count(dow) |> 
+  ggplot(aes(x = as.factor(dow), y = n))+
+  geom_col()
+```
+
+There is a massive decline in checkouts that occurs starting in 2020. 2020 seems pretty
+obvious what the cause was, but it doesn't appear to have rebounded since then. What's driving this change?
+Did branches close? Did the library lose funding and there are fewer items to lend? Did people
+stop checking out physical items and swap to digital?
+
+#What does the Subjects category look like. I know each item can have numerous subjects.
+
+```{r}
+#getting 2023 books to explore what subject looks like
+books_2023 <- filter_by_condition(checkouts, CheckoutYear == 2023, ItemType == 'acbk')
+books_2023_long_subjects <- books_2023 |> 
+  separate_longer_delim(Subjects, delim = ", ") 
+
+top_100_subjects <- books_2023_long_subjects |> 
+  filter(Subjects %in% subject_counts$Subjects[1:100])
+
+subject_counts <- books_2023_long_subjects |> 
+  count(Subjects) |> 
+  arrange(desc(n))
+
+subject_counts |> 
+  filter(n > 500) |> View()
+  ggplot(aes(n))+
+  geom_histogram(binwidth = 1000)
+  
+unique_books_2023 <- books_2023 |> 
+  distinct(ItemTitle, .keep_all = TRUE) |> 
+  separate_longer_delim(Subjects, delim = ", ")
+
+
+subject_counts |> 
+  filter(grepl("history", Subjects, ignore.case = TRUE))
+
+checkouts_by_book <- books_2023 |> 
+  group_by(ItemTitle) |> 
+  summarise(checkouts = n()) |> 
+  arrange(desc(checkouts))
+```
+
+Take a book that was popular in 2005. Track it's checkouts over time
+```{r}
+most_popular_books_2006 <-
+  checkouts |> 
+    filter_by_condition(CheckoutYear == 2006, ItemType == 'acbk', !is.na(ItemTitle)) |> 
+    group_by(ItemTitle) |> 
+    summarise(checkouts = n()) |> 
+    arrange(desc(checkouts))
+  
+top_20_2006 <- most_popular_books_2006 |> 
+  head(20) |> pull(ItemTitle)
+
+#Take the top 20 books by checkout of that year and see how they were checked out over the next years
+top_20 <- checkouts |> 
+  filter(ItemTitle %in% top_20_2006) |> 
+  collect()
+
+by_year <- top_20 |> 
+  group_by(ItemTitle, CheckoutYear) |> 
+  summarise(checkouts = n())
+
+by_year |> 
+  ggplot(aes(x = CheckoutYear, y = checkouts))+
+  geom_col()+
+  facet_wrap(~ ItemTitle, scales = 'free_y')
+
+```
+
+Look at the most popular 20 checkouts every year. Do they makeup about the same proportion
+of checkouts every year?
+```{r}
+top_20_books_each_year <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  group_by(CheckoutYear, ItemTitle) |> 
+  summarise(checkouts = n()) |> 
+  arrange(desc(checkouts)) |> 
+  slice_head(n = 20)
+
+
+top_20_books_each_year |> 
+  filter_by_condition(CheckoutYear >=2014) |> 
+  group_by(CheckoutYear) |>  
+  ggplot(aes(x = checkouts, y = tidytext::reorder_within(ItemTitle, checkouts, CheckoutYear)))+
+  geom_col()+
+  facet_wrap(~CheckoutYear, scales = 'free')+
+  scale_y_discrete(labels = scales::label_wrap(30))
+  
+```
+
+How many different ItemTitle's are there for books? Just over 600k. Does this count
+grow or shrink over time? ie Are they adding or removing books from the collection?
+```{r}
+book_list <- checkouts |>
+  filter(ItemType == 'acbk') |> 
+  distinct(ItemTitle) |> 
+  collect()
+
+
+# this is distinct book titles checked out each year
+distinct_book_count_by_year <- checkouts |> 
+  filter(ItemType == 'acbk') |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemTitle) |> 
+  summarise(total_books = n()) |> 
+  collect()
+
+distinct_book_count_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = total_books))+
+  geom_col()
+
+
+#this is distinct Itembarcodes. So how many distinct physical items(filtered to books)
+#where checked out. Is that different from Itemtitles?
+distinct_items_by_year <- checkouts |> 
+  filter(ItemType == 'acbk') |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemBarcode) |> 
+  summarise(total_items = n()) |> 
+  collect()
+
+
+distinct_items_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = total_items))+
+  geom_col()
+```
+
+How many physical copies of each book do they have? Did that change over the years?
+```{r}
+item_copies <- checkouts |> 
+  filter(ItemType == 'acbk') |> 
+  group_by(ItemTitle, CheckoutYear) |> 
+  distinct(ItemBarcode) |> 
+  summarise(copies = n()) |> 
+  collect()
+
+
+```
+
+What are the longest periods of time between rentals of a book? Both a specific title
+and a specific physical book itself?
+```{r}
+checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  group_by(ItemTitle) |> 
+  summarise(days_between_checkouts = max(CheckoutDateTime) - min(CheckoutDateTime))
+
+first_last_checkout <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  select(ItemTitle, CheckoutDateTime) |> 
+  group_by(ItemTitle) |> 
+  filter(CheckoutDateTime == max(CheckoutDateTime) | CheckoutDateTime == min(CheckoutDateTime)) |> 
+  collect()
+
+#This takes forever to run. Think of a better way
+first_last_checkout |> 
+  mutate(CheckoutDateTime = as.Date(CheckoutDateTime)) |> 
+  slice_head(n = 10)
+  summarise(
+    between_checkouts = max(CheckoutDateTime) - min(CheckoutDateTime)
+  )
+```
+
+
+What are the most checkout out books over the entire time period?
+```{r}
+top_books <- checkouts |> 
+  filter_by_condition(ItemType == 'acbk', !is.na(ItemTitle)) |> 
+  count(ItemTitle)
+```
+
+Fiction vs NonFiction
+```{r}
+fic_nonfic <- books_2023_long_subjects |> 
+  filter(grepl("fiction", Subjects))
+```
+
+
+Looking at book checkouts by month and day of week for 2024
+```{r}
+books_by_year_add_dates <- function(df, condition, ...){
+  df |> 
+    filter_by_condition({{condition}}, ...) |> 
+    mutate(
+        dow = wday(CheckoutDateTime, label = TRUE),
+        month = month(CheckoutDateTime),
+        hour = hour(CheckoutDateTime)
+    )
+}
+
+years <- c(2010, 2011)
+
+list_of_dfs <- map(years, ~books_by_year_add_dates(checkouts, !is.na(ItemTitle), ItemType == 'acbk', CheckoutYear == .x))
+
+list_of_dfs |> 
+  pluck()
+books_2024 |> 
+  group_by(month) |> 
+  count() |> 
+  ggplot(aes(x = as.factor(month), y = n))+
+  geom_col()
+
+books_2023 |> 
+  group_by(month) |> 
+  count() |> 
+  ggplot(aes(x = as.factor(month), y = n))+
+  geom_col()
+
+books_2015 |> 
+  group_by(month) |> 
+  count() |> 
+  ggplot(aes(x = as.factor(month), y = n))+
+  geom_col()
+
+
+books_2015 |> 
+  group_by(dow) |> 
+  count() |> 
+  ggplot(aes(x = as.factor(dow), y = n))+
+  geom_col()
+```
+
+Fiction v NonFiction by dates
+```{r}
+books_2019 <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk', CheckoutYear == 2019)
+
+non_fiction_collection_codes <- type_data |> 
+  filter_by_condition(format_subgroup == "Book", category_group == 'Nonfiction')
+
+books_2019 <- books_2019 |> 
+  mutate(classification = if_else(Collection %in% non_fiction_collection_codes$code, "Nonfiction", "Fiction")) |> 
+  add_dates()
+
+books_2019 |> 
+  group_by(month, classification) |> 
+  count() |> 
+  ggplot(aes(x = as.factor(month), y = n, fill = classification))+
+  geom_col(position = 'dodge')
+
+books_2019 |> 
+  group_by(hour, classification) |> 
+  count() |> 
+  ggplot(aes(x = hour, y = n, fill = classification))+
+  geom_col(position = 'dodge')
+
+books_2019 |> 
+  group_by(dow, classification) |> 
+  count() |> 
+  ggplot(aes(x = dow, y = n, fill = classification))+
+  geom_col(position = 'dodge')
+```
+
+
+How many books are added to the collection every year?
+```{r}
+books <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk', CheckoutYear != 2025)
+
+distinct_bib <- books |> 
+  group_by(CheckoutYear) |> 
+  distinct(BibNumber) |> 
+  summarise(total_books = n())
+
+distinct_item_bar <- books |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemBarcode) |> 
+  summarise(total_books = n())
+
+distinct_item_title <- books |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemTitle) |> 
+  summarise(total_books = n())
+
+all_distinct <- bind_rows(
+  list(
+    bib = distinct_bib,
+    bar = distinct_item_bar,
+    title = distinct_item_title), .id = "id"
+)
+
+all_distinct |> 
+  ggplot(aes(x = CheckoutYear, y = total_books, color = id))+
+  geom_line()
+
+
+# strictly speaking this isn't books added or removed from the collection, but 
+#checkedout vs not checkedout between years. They could still be in the collection,
+#but were never checked out and then are 'invisible' to us.
+books_2010 <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk', CheckoutYear == 2010) |> 
+  distinct(ItemTitle)
+
+books_2024 <- checkouts |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk', CheckoutYear == 2024) |> 
+  distinct(ItemTitle)
+
+#books added between 2010-2024
+added_2024 <- books_2024 |> 
+  anti_join(books_2010, by = join_by(ItemTitle))
+
+#books removed in 2011
+removed_2024 <- books_2010 |> 
+  anti_join(books_2024, by = join_by(ItemTitle))
+
+```
+
+Tablet/Computer Rentals--or potentially computer time depending on how this is structured.
+```{r}
+computer_rentals <- checkouts |> 
+  filter_by_condition(ItemType %in% c("HOTSPOT", "alaptop", "atablet"))
+  
+
+computer_rentals |> 
+  group_by(CheckoutYear, ItemType) |> 
+  summarise(total = n()) |> 
+  ungroup() |> 
+  ggplot(aes(as.factor(CheckoutYear), total, fill = ItemType))+
+  geom_col(position = 'dodge')
+```
+
+#First stab at prediction of checkouts per month/week
+```{r}
+library(tsibble)
+# Want the number of checkouts for each book(initially) each month
+book_checkouts <- checkouts |> 
+  select(ItemTitle, CheckoutYear, ItemType, Collection, Subjects, CheckoutDateTime) |> 
+  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  mutate(year_month = yearmonth(CheckoutDateTime))
+
+book_checkouts_by_title_year_month <- book_checkouts |> 
+  group_by(ItemTitle, year_month) |> 
+  summarise(total = n()) |> 
+  ungroup() |> 
+  as_tsibble(key = ItemTitle,
+             index = year_month)
+
+#what's our threshold for cutting down the number of books we have to forecast.
+#600k is too many. 
+test <- book_checkouts |> 
+  group_by(ItemTitle, CheckoutYear) |> 
+  summarise(total = n()) |> 
+  pivot_wider(id_cols = ItemTitle, names_from = CheckoutYear, names_glue = "year_{CheckoutYear}",  
+                values_from = total, values_fill = 0)
+
+t <- test |> 
+  mutate(total_checks = rowSums(pick(year_2010:year_2025)))
+single_checkout <- t |> 
+  filter(total_checks == 1)
+top_100000 <- t |> 
+  arrange(desc(total_checks)) |> 
+  head(n = 100000)
+
+top_books <- semi_join(book_checkouts, top_100000, by = "ItemTitle")
+#taking a look at a couple books to see what their timeseries plots look like
+test_ts <- book_checkouts_by_title_year_month |> 
+  ungroup() |> 
+  filter(ItemTitle == 'Educated a memoir' | ItemTitle == 'Capital in the twenty first century' | 
+           grepl("light eaters", ItemTitle) | ItemTitle == 'Lessons in chemistry')
+ 
+test_ts <- test_ts |> 
+  fill_gaps(total = 0) 
+
+test_ts |> 
+  ggplot(aes(x = year_month, y = total, color = ItemTitle))+
+  geom_line()
+
+library(fable)
+test_fit <- test_ts |> 
+  model(ets = ETS(total),
+        arima = ARIMA(total))
+
+test_fit |> 
+  accuracy()
+
+test_fit |> 
+  forecast(h = 24) |> View()
+  autoplot(test_ts, level = NULL)
+```
+
+So this works on the individual book level, but as we learned above, there are 
+~600k
