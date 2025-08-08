@@ -37,3 +37,10 @@ get_year_and_add_age_group <- function(df, condition){
     filter_by_condition({{condition}}) |> 
     add_age_group()
 }
+
+#TODO Plot theme function
+
+
+#TODO Plotting function/s
+
+#Summing the total count of books when a book is labeled with multiple ItemTypes

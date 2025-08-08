@@ -277,20 +277,19 @@ Look at the most popular 20 checkouts every year. Do they makeup about the same 
 of checkouts every year?
 ```{r}
 top_20_books_each_year <- checkouts |> 
-  filter_by_condition(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk') |> 
   group_by(CheckoutYear, ItemTitle) |> 
   summarise(checkouts = n()) |> 
+  mutate(prop_checkouts = checkouts/sum(checkouts)) |> 
   arrange(desc(checkouts)) |> 
+  collect() |> 
   slice_head(n = 20)
 
 
 top_20_books_each_year |> 
-  filter_by_condition(CheckoutYear >=2014) |> 
-  group_by(CheckoutYear) |>  
-  ggplot(aes(x = checkouts, y = tidytext::reorder_within(ItemTitle, checkouts, CheckoutYear)))+
-  geom_col()+
-  facet_wrap(~CheckoutYear, scales = 'free')+
-  scale_y_discrete(labels = scales::label_wrap(30))
+  summarise(prop_total = sum(prop_checkouts)) |> 
+  ggplot(aes(x = CheckoutYear, y = prop_total))+
+  geom_line()
   
 ```
 
@@ -334,10 +333,11 @@ distinct_items_by_year |>
 How many physical copies of each book do they have? Did that change over the years?
 ```{r}
 item_copies <- checkouts |> 
-  filter(ItemType == 'acbk') |> 
-  group_by(ItemTitle, CheckoutYear) |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk'|ItemType == 'jcbk'|ItemType == 'pkbknh') |> 
+  group_by(ItemTitle) |> 
   distinct(ItemBarcode) |> 
   summarise(copies = n()) |> 
+  arrange(desc(copies)) |> 
   collect()
 
 

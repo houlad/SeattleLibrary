@@ -126,6 +126,72 @@ area I'm actually interested in.
 
 #What are they most checked out books of the entire dataset? What about every year?
 
+##How many physical books are in the seattle collection
+```{r}
+checkouts |> 
+  filter(ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  distinct(ItemBarcode) |> 
+  count()
+```
+So a little over 4.6 million physical copies of about 750k books. So with Seattle being a city of
+about ~750k people the library houses about 6 books per person. I honestly can't decide if 
+that's a large number or not.
+
+##How many copies of each book do they have
+```{r}
+item_copies <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk'|ItemType == 'jcbk'|ItemType == 'pkbknh') |> 
+  group_by(ItemTitle) |> 
+  distinct(ItemBarcode) |> 
+  summarise(copies = n()) |> 
+  arrange(desc(copies)) |> 
+  collect()
+
+item_copies |> 
+  ggplot(aes(copies))+
+  geom_histogram()+
+  scale_x_log10()
+```
+
+##Has the number of copies of books changed over the years
+```{r}
+#This copies of books over the years doesn't seem like a useful/well defined line
+#of inquiry. Probably abandon this.
+item_copies_by_year <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk'|ItemType == 'jcbk'|ItemType == 'pkbknh') |> 
+  group_by(ItemTitle, CheckoutYear) |> 
+  distinct(ItemBarcode) |> 
+  summarise(copies = n()) |> 
+  arrange(desc(copies)) |> 
+  collect()
+
+copies_by_year <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk'|ItemType == 'jcbk'|ItemType == 'pkbknh') |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemBarcode) |> 
+  summarise(copies = n()) |> 
+  collect() 
+
+item_copies_by_year |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  summarise(avg_copies = mean(copies)) |> 
+  ggplot(aes(x = CheckoutYear, y = avg_copies))+
+  geom_line()
+
+item_copies_by_year |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  summarise(as_tibble_row(quantile(copies))) |> View()
+
+
+top_1000 <- item_copies_by_year |> 
+  semi_join(item_copies |> slice_head(n = 1000), by = "ItemTitle")
+
+top_1000 |> 
+```
+
+
 ##What do book checkouts look like over the years?
 We've already seen checkouts generally have been declining, but let's take a look
 at just our book categories.
@@ -197,6 +263,9 @@ books with no wait or holds. But these often overlap with acbk books. So you end
 two counts of the same book, when in many respects they should be added together and treated as one.
 Let's try doing that to see if anything changes.
 ```{r}
+#This pipeline works because top_checkouts_all_time was grouped by ItemTitle and ItemType, 
+#but when that is summarised and returned, it's only grouped by ItemTitle. So the mutate
+#is just summing up checkouts by title. This is confusing and needs to be documented here.
 top_checkouts_all_time |> 
   mutate(title_checkouts = sum(total_checkouts)) |> 
   filter(ItemType %in% c("acbk", "jcbk")) |> 
@@ -213,14 +282,487 @@ So after adding the Peak Picks books to the other acbk or jcbk books, it doesn't
 really look like anything changes in terms of how much of the distribution 200k
 books gets you for adult and juvenile books.
 
-##Most checked out books by year.
+##Most checked out book each year.
 
-Let's start with 5 books a year.
+Let's start with the top book of each year.
 ```{r}
-top_checkouts_all_time |> 
-  checkouts |> 
+#TODO plot styling and cleanup
+checkouts_by_year <- checkouts |> 
   filter(!is.na(ItemTitle), ItemType %in% c('acbk', 'jcbk', 'ahbk', 'pkbknh',
                                             'bcbk', 'arbk')) |> 
+  group_by(ItemTitle, CheckoutYear) |> 
+  summarise(total_checkouts = n()) |> 
+  arrange(CheckoutYear, desc(total_checkouts)) |> 
+  collect()
+
+checkouts_by_year |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  slice_head(n = 1) |> 
+  ggplot(aes(x = total_checkouts, y = tidytext::reorder_within(ItemTitle, total_checkouts, CheckoutYear)))+
+  geom_col()
+
+
 ```
 
+##Top Novels
+This is trickier than you might think. First, we have to separate out the subjects from 
+the comma separated Subject variable. And then, once we start inspecting the data, something
+weird appears-novels only became a subject category in 2015? Visually inspecting a couple classic novels
+we see Moby Dick is an allegory, adventure fiction, whale fiction, sea story, or epic fiction, 
+but not a novel. Catch-22 is a war story. This is somewhat problematic if I'm trying to look
+at the most checked out novels of the data set.
+
+What about we just use the more general fiction category?
+##All Time
+```{r}
+#This novel approach doesn't really do what I want, but I'm keeping it in for now.
+books <- checkouts |> 
+  select(CheckoutYear, ItemTitle, ItemType, Collection, Subjects) |> 
+  filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c('acbk', 'jcbk', 'pkbknh')) |> 
+  collect() |> 
+  separate_longer_delim(Subjects, delim = ', ')
+
+books_2010 <- checkouts |> 
+  select(CheckoutYear, ItemTitle, ItemType, Collection, Subjects) |> 
+  filter(!is.na(ItemTitle),
+         CheckoutYear == 2010, !is.na(Subjects), ItemType %in% c('acbk', 'jcbk', 'pkbknh')) |> 
+  collect() |> 
+  separate_longer_delim(Subjects, delim = ', ')
+
+novels_2010 <- books_2010 |> 
+  filter(Subjects == 'Novels')
+
+
+novels <- books |> 
+  filter(Subjects == 'Novels') |>
+  group_by(ItemTitle, CheckoutYear) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total))
+
+```
+
+###All Time Fiction
+```{r}
+typed_books <- checkouts |> 
+  select(CheckoutYear, ItemTitle, ItemType, Collection, Subjects) |> 
+  filter(!is.na(ItemTitle), ItemType %in% c('acbk', 'jcbk', 'pkbknh')) |> 
+  collect() |> 
+  left_join(type_data, by = join_by(Collection == code))
+
+fiction <- typed_books |> 
+  filter(category_group == 'Fiction')
+
+
+fiction |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total = n()) |> 
+  arrange( desc(total)) |> 
+  #ungrouping after these steps speeds this up massively for a reason I don't fully understand
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(ItemTitle, total), fill = ItemType))+
+  geom_col()
+
+
+```
+
+
+###Top Fiction Each Year
+```{r}
+fict_counts <- fiction |> 
+  group_by(ItemTitle,CheckoutYear, ItemType) |> 
+  summarise(total = n()) |> 
+  mutate(combined_total = sum(total)) |> 
+  arrange( desc(combined_total))
+
+fict_counts|> 
+  #ungrouping after these steps speeds this up massively for a reason I don't fully understand
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  slice_head(n = 1) |> 
+  ggplot(aes(x = combined_total, y = tidytext::reorder_within(ItemTitle, combined_total, CheckoutYear), fill = ItemType))+
+  geom_col()
+```
+
+###Single Year Fiction
+```{r}
+fiction |> 
+  filter(CheckoutYear == 2024) |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total)) |> 
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(ItemTitle, total), fill = ItemType))+
+  geom_col()
+```
+
+
+###Top NonFiction
+```{r}
+non_fiction <- typed_books |> 
+  filter(category_group == 'Nonfiction')
+
+non_fiction |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total)) |> 
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(ItemTitle, total), fill = ItemType))+
+  geom_col()
+```
+
+###Top NonFiction Each Year
+```{r}
+nonfict_counts <- non_fiction |> 
+  group_by(ItemTitle, CheckoutYear, ItemType) |> 
+  summarise(total = n()) |> 
+  mutate(combined_total = sum(total)) |> 
+  arrange(desc(combined_total))
+
+
+nonfict_counts |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  slice_head(n = 1) |> 
+  ggplot(aes(x = combined_total, y = tidytext::reorder_within(ItemTitle, combined_total, CheckoutYear),
+             fill = ItemType))+
+  geom_col()
+```
+
+###Single Year NonFiction
+```{r}
+non_fiction |> 
+  filter(CheckoutYear == 2024) |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total)) |> 
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(ItemTitle, total), fill = ItemType))+
+  geom_col()
+```
+
+###Biographies all time
+```{r}
+biographies <- typed_books |> 
+  filter(category_subgroup == 'Biography')
+
+biographies |> 
+  group_by(ItemTitle, ItemType) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total)) |> 
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(ItemTitle, total), fill = ItemType))+
+  geom_col()
+```
+
+###Biographies each year
+```{r}
+bio_counts <- biographies |> 
+  group_by(ItemTitle, CheckoutYear, ItemType) |> 
+  summarise(total = n()) |> 
+  mutate(combined_total = sum(total)) |> 
+  arrange(desc(combined_total))
+
+bio_counts |> 
+  ungroup() |> 
+  group_by(CheckoutYear) |> 
+  slice_head(n = 1) |> 
+  ggplot(aes(x = combined_total, y = tidytext::reorder_within(ItemTitle, combined_total, CheckoutYear),
+             fill = ItemType))+
+  geom_col()
+```
+
+
+```{r}
+checkouts |> 
+  filter(ItemTitle == 'Moby Dick') |> 
+  group_by(CheckoutYear) |> 
+  summarise(total = n()) |> 
+  collect() |> 
+  ggplot(aes(x = CheckoutYear, y = total))+
+  geom_line()
+```
+
+###Fiction v NonFiction by Year
+```{r}
+fic_nf <- typed_books |> 
+  filter(category_group %in% c("Fiction", "Nonfiction")) |> 
+  group_by(CheckoutYear, category_group) |> 
+  summarise(total = n()) |> 
+  mutate(prop_fic = total/sum(total))
+
+fic_nf |> 
+  filter(category_group == "Fiction") |> 
+  ggplot(aes(x = CheckoutYear, y = prop_fic))+
+  geom_col()+
+  geom_smooth()+
+  scale_y_continuous(labels = scales::percent_format())
+```
+
+
+#Top 100 books proportion of total checkouts
+So it appears a smaller handful of really popular books are making up an increasing 
+proportion of the total checkouts. 
+```{r}
+top_100_books_each_year <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType == 'acbk') |> 
+  group_by(CheckoutYear, ItemTitle) |> 
+  summarise(checkouts = n()) |> 
+  mutate(prop_checkouts = checkouts/sum(checkouts)) |> 
+  arrange(desc(checkouts)) |> 
+  collect() |> 
+  slice_head(n = 100)
+
+#TODO line or bar chart each could be an option here. think about what better captures
+# the question being asked
+top_100_books_each_year |> 
+  summarise(prop_total = sum(prop_checkouts)) |> 
+  ggplot(aes(x = CheckoutYear, y = prop_total))+
+  geom_col()+
+  geom_smooth()
+```
+
+## How many unique books were checked out each year?
+```{r}
+unique_books_by_year <- checkouts |> 
+  filter(!is.na(ItemTitle), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  group_by(CheckoutYear) |> 
+  distinct(ItemTitle) |> 
+  summarise(unique_books = n()) |> 
+  collect() 
+
+unique_books_by_year |> 
+  ggplot(aes(x = CheckoutYear, y = unique_books))+
+  geom_col()+
+  scale_y_continuous(labels = scales::number_format())+
+  geom_smooth()
+```
+
+#Top Subjects
+
+Looking at the top subjects will involve a huge amount of data--something like 300 million
+rows. I'm not sure I can just brute force analyzing this, so I need to do things smartly.
+
+```{r}
+long_subjects <- checkouts |> 
+  select(CheckoutYear, ItemType, Collection, ItemTitle, Subjects) |> 
+  filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  collect() |> 
+  separate_longer_delim(Subjects, delim = ", ")
+
+make_long_subjects_df <- function(year) {
+  checkouts |> 
+    filter(CheckoutYear == {{year}}) |> 
+    filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+    collect() |> 
+    separate_longer_delim(Subjects, delim = ", ") |> 
+    group_by(Subjects) |> 
+    summarise(counts = n()) |>
+    mutate(year = {{year}}) |> 
+    arrange(desc(counts))
+}
+
+#Ends up taking about 5 minutes, so not too bad.
+library(tictoc)
+tic()
+#results <- map_dfr(2005:2025, make_long_subjects_df)
+results <- map_dfr(2024, make_long_subjects_df)
+toc()
+
+results |> 
+  group_by(Subjects) |> 
+  summarise(totals = sum(counts)) |> 
+  arrange(desc(totals)) |> 
+  head(25) |> 
+  ggplot(aes(x = totals, y = fct_reorder(Subjects, totals)))+
+  geom_col()+
+  scale_x_continuous(labels = scales::number_format())
+
+
+results |> 
+  filter(year %in% c(2010, 2020)) |> 
+  group_by(year) |> 
+  arrange(desc(counts)) |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = counts, y = tidytext::reorder_within(Subjects, counts, year)))+
+  geom_col()+
+  scale_x_continuous(labels = scales::number_format())+
+  facet_wrap(~year, scales = 'free')
+```
+
+```{r}
+top_100_2010 <- results |>  filter(year == 2010) |>  slice_head(n = 100)
+top_100_2024 <- results |>  filter(year == 2024) |>  slice_head(n = 100)
+
+setdiff(top_100_2010$Subjects, top_100_2024$Subjects)
+setdiff(top_100_2024$Subjects, top_100_2010$Subjects)
+intersect(top_100_2010$Subjects, top_100_2024$Subjects)
+symdiff(top_100_2010$Subjects, top_100_2024$Subjects)
+
+results |> 
+  filter(year %in% c(2010, 2020)) |> 
+  group_by(year) |> 
+  arrange(desc(counts)) |> 
+  slice_head(n = 25) |> 
+  mutate(row = row_number()) |> 
+  select(-counts) |> 
+  pivot_wider( names_from = year, names_glue = "subject_{year}", values_from = Subjects) |> 
+  select(-row) |> 
+  reduce(intersect)
+```
+There is perhaps an interesting visualization here, but I'm not sure how to do it.
+Seems like you'd need something like an animation to do it justice.
+
+
+#Date Exploration
+Do checkout patterns vary with time of day, week, or month?
+
+Add date features to the dataset
+```{r}
+dated <- checkouts |> 
+  filter(CheckoutYear == 2025) |> 
+  filter(!is.na(ItemTitle), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  add_dates() |> 
+  collect()
+
+checkouts |> 
+  filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  add_dates() |> 
+  count(dow) |> 
+  ggplot(aes(x = dow, y = n))+
+  geom_col()
+
+dated |> 
+  mutate(main_subject = str_split_i(Subjects, pattern = ', ', i = 1)) |> 
+  group_by(main_subject, month) |> 
+  summarise(total_checkouts = n()) |> 
+  arrange(desc(total_checkouts))
+```
+
+##Figuring out the hierarchy of the dataset and how to structure it for modeling
+```{r}
+library(tsibble)
+test <- dated |> 
+  mutate(main_subject = str_split_i(Subjects, pattern = ', ', i = 1)) |> 
+  select(CheckoutYear, ItemType, Collection, ItemTitle, dow, month,
+         hour, week, main_subject) |> 
+  group_by(ItemType, ItemTitle) |> 
+  summarise(total_checkouts = n()) |> 
+  arrange(desc(total_checkouts))
+
+dated |> 
+  mutate(main_subject = str_split_i(Subjects, pattern = ', ', i = 1)) |> 
+  group_by(ItemType, Collection, main_subject) |> 
+  summarise(total = n())  |> View()
+
+top_books_by_year <- function(year, n) {
+  checkouts |> 
+    filter(CheckoutYear == {{year}}) |> 
+    filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+    group_by(ItemTitle) |> 
+    summarise(total = n()) |>
+    arrange(desc(total)) |> 
+    head(n) |> 
+    mutate(year = {{year}}) |> 
+    collect()
+}
+library(tictoc)
+tic()
+r <- map_dfr(2005:2025, top_books_by_year)
+toc()
+
+top_books <- r |> 
+  distinct(ItemTitle)
+
+gather_top_books <- function(year, data){
+  checkouts |> 
+    select(ItemType, Collection, CheckoutYear, Subjects, CheckoutDateTime, ItemTitle) |> 
+    filter(CheckoutYear == {{year}}) |> 
+    filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+    collect() |> 
+    semi_join(data, by = join_by(ItemTitle)) |> 
+    mutate(main_subject = str_split_i(Subjects, pattern = ', ', i = 1)) |> 
+    select(-Subjects)
+    
+}
+
+book_list <- map_dfr(2005:2025, gather_top_books)
+
+book_aggregates <- book_list |> 
+  group_by(ItemType, Collection, main_subject, ItemTitle) |> 
+  summarise(counts = n()) |> 
+  arrange(desc(counts))
+
+#I can't quite wrap my head around how to do this with this much data. Going to do 
+#it on a small dataset first
+
+small_r <- map_dfr(2005:2025, top_books_by_year, 10)
+small_top_books <- small_r |> 
+  distinct(ItemTitle)
+small_book_list <- map_dfr(2005:2025, gather_top_books, small_top_books)
+
+small_book_list_dated <- small_book_list |> 
+  mutate(year_month = yearmonth(CheckoutDateTime)) 
+
+small_book_aggregates <- small_book_list_dated |> 
+  group_by(year_month, ItemType, Collection, main_subject, ItemTitle) |> 
+  summarise(counts = n()) |> 
+  arrange(desc(counts)) |> 
+  #ungroup this or it will cause issues later on with filling implicit NAs
+  ungroup()
+
+# small_item_aggregate <- small_book_list |> 
+#   group_by(ItemType) |> 
+#   summarise(counts = n()) |> 
+#   arrange(desc(counts))
+# 
+# small_collection_aggregate <- small_book_list |> 
+#   group_by(ItemType, Collection) |> 
+#   summarise(counts = n()) |> 
+#   arrange(desc(counts))
+# small_subject_aggregate <- small_book_list |> 
+#   group_by(ItemType, Collection, main_subject) |> 
+#   summarise(counts = n()) |> 
+#   arrange(desc(counts))
+
+
+
+library(fable)
+small_book_aggregates_ts <- small_book_aggregates|> 
+  as_tsibble(key = c(ItemType, Collection, main_subject, ItemTitle), index = year_month) |> 
+  fill_gaps(counts = 0) 
+small_full_aggregated_ts <- small_book_aggregates_ts |> 
+  aggregate_key(ItemType/Collection/main_subject/ItemTitle, counts = sum(counts))
+
+library(future)
+plan(multisession, workers = 8)
+fit <- small_full_aggregated_ts |> 
+  filter(year(year_month) <= 2022) |> 
+  model(base = ETS(counts)) |> 
+  reconcile(
+    bu = bottom_up(base),
+    ols = min_trace
+    
+    
+    
+  )
+
+test <- small_full_aggregated_ts |> 
+  filter(year(year_month) >=2023)
+predict(test)
+fc <- fit |>  forecast(h = '27 months')
+
+fc |> 
+  filter(is_aggregated(ItemTitle)) |> 
+  autoplot()
+
+fc |> 
+  filter(ItemType == 'acbk') |> 
+  autoplot(small_full_aggregated_ts, level = NULL)
+```
 
