@@ -133,6 +133,20 @@ checkouts |>
   distinct(ItemBarcode) |> 
   count()
 ```
+
+## How many checkouts per day?
+
+```{r}
+checkouts |> 
+  filter(ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+  mutate(CheckoutDateTime = as.Date(CheckoutDateTime)) |> 
+  group_by(CheckoutDateTime) |> 
+  summarise(checkouts = n()) |> 
+  collect() |> 
+  ggplot(aes(x = CheckoutDateTime, y = checkouts))+
+  geom_line()
+```
+
 So a little over 4.6 million physical copies of about 750k books. So with Seattle being a city of
 about ~750k people the library houses about 6 books per person. I honestly can't decide if 
 that's a large number or not.
@@ -560,8 +574,9 @@ make_long_subjects_df <- function(year) {
     filter(CheckoutYear == {{year}}) |> 
     filter(!is.na(ItemTitle), !is.na(Subjects), ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
     collect() |> 
+    add_category_subgroup(type_data) |> 
     separate_longer_delim(Subjects, delim = ", ") |> 
-    group_by(Subjects) |> 
+    group_by(category_subgroup, Subjects) |> 
     summarise(counts = n()) |>
     mutate(year = {{year}}) |> 
     arrange(desc(counts))
@@ -644,7 +659,7 @@ dated |>
   arrange(desc(total_checkouts))
 ```
 
-##Figuring out the hierarchy of the dataset and how to structure it for modeling
+#Figuring out the hierarchy of the dataset and how to structure it for modeling
 ```{r}
 library(tsibble)
 test <- dated |> 
@@ -660,6 +675,7 @@ dated |>
   group_by(ItemType, Collection, main_subject) |> 
   summarise(total = n())  |> View()
 
+## TODO Place in utilities and tidy up
 top_books_by_year <- function(year, n) {
   checkouts |> 
     filter(CheckoutYear == {{year}}) |> 
@@ -679,6 +695,7 @@ toc()
 top_books <- r |> 
   distinct(ItemTitle)
 
+##TODO Place in utilities and tidy up
 gather_top_books <- function(year, data){
   checkouts |> 
     select(ItemType, Collection, CheckoutYear, Subjects, CheckoutDateTime, ItemTitle) |> 
@@ -698,23 +715,7 @@ book_aggregates <- book_list |>
   summarise(counts = n()) |> 
   arrange(desc(counts))
 
-#I can't quite wrap my head around how to do this with this much data. Going to do 
-#it on a small dataset first
 
-small_r <- map_dfr(2005:2025, top_books_by_year, 10)
-small_top_books <- small_r |> 
-  distinct(ItemTitle)
-small_book_list <- map_dfr(2005:2025, gather_top_books, small_top_books)
-
-small_book_list_dated <- small_book_list |> 
-  mutate(year_month = yearmonth(CheckoutDateTime)) 
-
-small_book_aggregates <- small_book_list_dated |> 
-  group_by(year_month, ItemType, Collection, main_subject, ItemTitle) |> 
-  summarise(counts = n()) |> 
-  arrange(desc(counts)) |> 
-  #ungroup this or it will cause issues later on with filling implicit NAs
-  ungroup()
 
 # small_item_aggregate <- small_book_list |> 
 #   group_by(ItemType) |> 
@@ -735,9 +736,14 @@ small_book_aggregates <- small_book_list_dated |>
 library(fable)
 small_book_aggregates_ts <- small_book_aggregates|> 
   as_tsibble(key = c(ItemType, Collection, main_subject, ItemTitle), index = year_month) |> 
-  fill_gaps(counts = 0) 
+  #.full = end() needed to fully flesh out implicit gaps
+  fill_gaps(counts = 0, .full = end()) 
 small_full_aggregated_ts <- small_book_aggregates_ts |> 
   aggregate_key(ItemType/Collection/main_subject/ItemTitle, counts = sum(counts))
+
+stretched <- small_book_aggregates_ts |> 
+  stretch_tsibble(.init = 4)
+
 
 library(future)
 plan(multisession, workers = 8)
@@ -745,17 +751,14 @@ fit <- small_full_aggregated_ts |>
   filter(year(year_month) <= 2022) |> 
   model(base = ETS(counts)) |> 
   reconcile(
-    bu = bottom_up(base),
-    ols = min_trace
-    
-    
-    
+    ols = min_trace(base, method = 'mint_shrink')
   )
 
 test <- small_full_aggregated_ts |> 
   filter(year(year_month) >=2023)
-predict(test)
-fc <- fit |>  forecast(h = '27 months')
+
+plan(multisession, workers = 8)
+fc <- fit |>  forecast(h = '1 months')
 
 fc |> 
   filter(is_aggregated(ItemTitle)) |> 
@@ -764,5 +767,134 @@ fc |>
 fc |> 
   filter(ItemType == 'acbk') |> 
   autoplot(small_full_aggregated_ts, level = NULL)
+```
+
+##ETS and ARIMA model
+Hierarchical sounds good in theory, but what exactly is my hierarchical structure?
+ItemType is a potential group, but acbk and pkbknh overlap and make that weird and
+tricky to handle. 
+
+Collection is similar-many books are in more than one collection, even something as
+simple as fiction and large print fiction.
+
+Subjects is the obvious area for a hierarchy by genre, but subjects isn't genre
+in the sense I normally think of-mystery, romance, history, biographies, etc. There
+are super specific categories-for example there are subjects like domestic fiction, 
+Cats Juvenile fiction, and Dragons Juvenile fiction. For 2024 alone there are over 215k
+different subjects. Is it feasible to topic model those subjects into a smaller number
+of 'genres'?
+```{r}
+library(quanteda)
+library(stm)
+library(tidytext)
+results_dfm <- results |> 
+  filter(!is.na(category_subgroup)) |> 
+  cast_dfm(category_subgroup, Subjects, counts)
+topic_model <- stm(results_dfm, K = 0, 
+                   verbose = TRUE, init.type = 'Spectral')
+
+td_beta <- tidy(topic_model)
+
+td_beta |> 
+  group_by(topic) |> 
+  filter(topic <=9) |> 
+  top_n(10, beta) |> 
+  ungroup() |> 
+  mutate(topic = paste0("Topic", topic), 
+         term = reorder_within(term, beta, topic)) |> 
+  ggplot(aes(term, beta, fill = as.factor(topic))) +
+    geom_col(alpha = 0.8, show.legend = FALSE) +
+    facet_wrap(~ topic, scales = "free_y") +
+    coord_flip() +
+    scale_x_reordered() +
+    labs(x = NULL, y = expression(beta),
+         title = "Highest word probabilities for each topic",
+         subtitle = "Different words are associated with different topics")
+```
+So if I try to do some topic modeling, the question is what does that structure look like?
+Typically, you will have something like a dataset of 10 books that you'll tokenize, 
+then count up the word usage by book
+
+
+```{r}
+#I can't quite wrap my head around how to do this with this much data. Going to do 
+#it on a small dataset first
+library(fable)
+library(tsibble)
+small_r <- map_dfr(2005:2025, top_books_by_year, 500)
+small_top_books <- small_r |> 
+  distinct(ItemTitle)
+small_book_list <- map_dfr(2005:2025, gather_top_books, small_top_books)
+
+small_book_list_dated <- small_book_list |> 
+  mutate(year_month = yearmonth(CheckoutDateTime)) 
+
+
+small_book_aggregates <- small_book_list_dated |> 
+  group_by(year_month, ItemTitle) |> 
+  summarise(counts = n()) |> 
+  arrange(desc(counts)) |> 
+  #ungroup this or it will cause issues later on with filling implicit NAs
+  ungroup()
+
+# turning into a tsibble
+
+small_book_ts <- small_book_aggregates|> 
+  as_tsibble(key = ItemTitle, index = year_month) |> 
+  #.full = end() needed to fully flesh out implicit gaps
+  fill_gaps(counts = 0, .full = end()) 
+
+library(future)
+plan(multisession, workers = 8)
+fit <- small_book_ts |> 
+  filter(year(year_month) <= 2022) |> 
+  model(base_ets = ETS(counts),
+        base_arima = ARIMA(counts)) 
+
+fc <- fit |> 
+  filter(ItemTitle == "Lessons in chemistry") |> 
+  forecast(h = '27 months') 
+small_book_ts |> 
+  filter(ItemTitle == 'Lessons in chemistry') |>
+  acf()
+  model(
+      ets = ETS(counts),
+      arima = ARIMA(counts)
+  ) |> 
+  forecast(h = '27 months') |> 
+  autoplot(small_book_ts |> filter(ItemTitle == 'Lessons in chemistry'), level = NULL)
+
+```
+
+
+##Fitting a prediction model instead of a time series model
+```{r}
+build_dated_df <- function(year){
+  checkouts |> 
+    filter(CheckoutYear == {{year}}) |> 
+    filter(!is.na(ItemTitle),ItemType %in% c("acbk", "jcbk", "pkbknh")) |> 
+    add_dates() |> 
+    collect() |> 
+    mutate(year_month = tsibble::yearmonth(CheckoutDateTime)) |> 
+    group_by(year_month, ItemTitle) |> 
+    summarise(checkouts = n()) 
+}
+
+dated_df <- map_dfr(2025, build_dated_df)
+
+dated_df |> 
+  group_by(ItemTitle) |> 
+  mutate(lag_1 = lag(checkouts),
+         lag_2 = lag(checkouts, 2)) |> 
+  filter(ItemTitle == 'Lessons in chemistry')
+```
+
+```{r}
+test_days <- checkouts |> 
+  filter(CheckoutYear == 2025) |> 
+  add_dates() |> 
+  group_by(ItemTitle, CheckoutYear, doy) |> 
+  summarise(checkouts = n()) |> 
+  collect()
 ```
 

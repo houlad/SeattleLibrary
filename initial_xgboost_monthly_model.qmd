@@ -1,0 +1,295 @@
+---
+title: "Untitled"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(duckdb)
+library(duckplyr)
+source("helper_functions.R")
+
+#Connect to local duckdb
+con <- dbConnect(duckdb(), dbdir = "duckdb_monthly", read_only = FALSE)
+```
+
+
+```{r}
+duckdb_read_csv(con, "checkouts_monthly", "/Users/athou/Downloads/Checkouts_by_Title_20250813.csv",
+                col.types = c(
+                  UsageClass = "VARCHAR",
+                  CheckoutType = "VARCHAR",
+                  MaterialType = "VARCHAR",
+                  CheckoutYear = "BIGINT",
+                  CheckoutMonth = "BIGINT",
+                  Checkouts = "BIGINT",
+                  Title = "VARCHAR",
+                  ISBN = "VARCHAR",
+                  Creator = "VARCHAR",
+                  Subjects = "VARCHAR",
+                  Publisher = "VARCHAR",
+                  PublicationYear = "VARCHAR"
+                ))
+```
+
+```{r}
+checkouts_monthly <- tbl(con, 'checkouts_monthly')
+checkouts_monthly 
+```
+
+```{r}
+base_books <- checkouts_monthly |> 
+  filter(UsageClass == "Physical", MaterialType == 'BOOK') |>
+  select(-ISBN) |> 
+  filter(!if_any(everything(), is.na)) 
+
+base_books |> 
+  group_by(CheckoutYear, CheckoutMonth) |> 
+  summarise(avg_checkouts = mean(Checkouts)) |> 
+  collect() |> 
+  mutate(year_month = tsibble::make_yearmonth(year = CheckoutYear, month = CheckoutMonth)) |> 
+  ggplot(aes(x = as.Date(year_month), y = avg_checkouts))+
+  geom_line()  +
+  geom_smooth()
+
+base_books |> 
+  group_by(Publisher) |> 
+  summarise(total = n()) |> 
+  arrange(desc(total)) |> 
+  collect() |> 
+  ungroup() |> 
+  slice_head(n = 25) |> 
+  ggplot(aes(x = total, y = fct_reorder(Publisher, total)))+
+  geom_col()+
+  scale_x_continuous(labels = scales::number_format())+
+  theme_minimal()
+```
+
+## Building a test model for 10 books.
+```{r}
+base_books <- checkouts_monthly |> 
+  filter(UsageClass == "Physical", MaterialType == 'BOOK') |>
+  select(-ISBN) |> 
+  filter(!if_any(everything(), is.na)) 
+
+library(tidymodels)
+base_books_df <- base_books |> 
+  collect() |> 
+  mutate(year_month = tsibble::make_yearmonth(year = CheckoutYear, month = CheckoutMonth)) 
+
+#find the top 10 most checkouted out books across the whole dataset and then filter to just those
+#books
+top_10_books <- base_books_df |> 
+  group_by(Title) |> 
+  summarise(total_checks = sum(Checkouts)) |> 
+  arrange(desc(total_checks)) |> 
+  slice_head(n = 10) |> 
+  pull(Title)
+
+top_10_books_checkouts <- base_books_df |> 
+  semi_join(data.frame(Title = top_10_books), join_by(Title)) |> 
+  select(-UsageClass, -CheckoutType, -MaterialType, -Subjects) 
+
+top_10_books_final <- top_10_books_checkouts |> 
+  mutate(across(where(is.character), factor))
+
+#using 90% of the data as training, 10% testing
+books_split <- initial_time_split(top_10_books_final|> arrange(year_month), prop = .9)
+
+training <- training(books_split)
+testing <- testing(books_split)
+
+
+
+xgboost_recipe <- recipe(
+  Checkouts ~ CheckoutYear + CheckoutMonth + Title + Creator + Publisher + PublicationYear,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+
+xgboost_spec <- 
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("xgboost")
+
+xgboost_workflow <-
+  workflow() |> 
+  add_recipe(xgboost_recipe) |> 
+  add_model(xgboost_spec)
+
+xgb_grid <- grid_space_filling(
+  tree_depth(),
+  min_n(),
+  learn_rate(),
+  trees(),
+  size = 10
+)
+
+
+folds <- vfold_cv(training, strata = Checkouts)
+library(future)
+library(tictoc)
+tic()
+plan(multisession, workers = 10)
+xgboost_tune <- 
+  tune_grid(xgboost_workflow, resamples = folds, grid = xgb_grid, 
+            control = control_grid(verbose = TRUE))
+toc()
+
+best_fit <- select_best(xgboost_tune)
+
+xgb_fit <- finalize_workflow(xgboost_workflow,
+                             best_fit)
+
+library(vip)
+xgb_fit |> 
+  fit(data = training) |> 
+  extract_fit_parsnip() |> 
+  vip(geom = 'point')
+
+final <- last_fit(xgb_fit,
+         books_split)
+
+final |> 
+  collect_predictions() 
+
+final |> 
+  collect_metrics()
+```
+
+Generating new variables to try to improve accuarcy
+```{r}
+top_10_books_new_features <- top_10_books_final |> 
+  group_by(Title, Publisher, PublicationYear) |> 
+  arrange(year_month) |> 
+  mutate(Checkout_lag_1_month = lag(Checkouts, 1),
+         Checkout_lag_2_month = lag(Checkouts, 2),
+         Checkout_lag_6_month = lag(Checkouts, 6),
+         Rolling_average_2_month = zoo::rollmean(Checkouts, 2, fill = NA),
+         Rolling_average_3_month = zoo::rollmean(Checkouts, 3, fill = NA),
+         Rolling_average_6_month = zoo::rollmean(Checkouts, 6, fill = NA),
+         Rolling_average_12_month = zoo::rollmean(Checkouts, 12, fill = NA)) |> 
+  ungroup() |> 
+  group_by(year_month) |> 
+  mutate(average_book_checkouts = mean(Checkouts),
+         is_summer = if_else(CheckoutMonth %in% c(6, 7, 8), 1, 0),
+         is_december = if_else(CheckoutMonth == 12, 1, 0)) |> 
+  ungroup()
+
+#using 90% of the data as training, 10% testing
+books_split <- initial_time_split(top_10_books_new_features|> arrange(year_month), prop = .9)
+
+training <- training(books_split)
+testing <- testing(books_split)
+
+
+
+xgboost_recipe <- recipe(
+  Checkouts ~ CheckoutYear + CheckoutMonth + Title + Creator + Publisher + PublicationYear +
+              Checkout_lag_1_month + Checkout_lag_2_month + Checkout_lag_6_month +
+              Rolling_average_2_month + Rolling_average_6_month + Rolling_average_12_month+
+              average_book_checkouts + is_summer + is_december + Rolling_average_3_month,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+
+xgboost_spec <- 
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("xgboost")
+
+xgboost_workflow <-
+  workflow() |> 
+  add_recipe(xgboost_recipe) |> 
+  add_model(xgboost_spec)
+
+xgb_grid <- grid_space_filling(
+  tree_depth(),
+  min_n(),
+  learn_rate(),
+  trees(),
+  size = 10
+)
+
+my_metrics <- metric_set(rmse, mape, mae)
+folds <- vfold_cv(training, strata = Checkouts)
+library(future)
+library(tictoc)
+tic()
+plan(multisession, workers = 14)
+xgboost_tune <- 
+  tune_grid(xgboost_workflow, resamples = folds, grid = xgb_grid, 
+            control = control_grid(verbose = TRUE),
+            metrics = my_metrics)
+toc()
+
+best_fit <- select_best(xgboost_tune)
+
+xgb_fit <- finalize_workflow(xgboost_workflow,
+                             best_fit)
+
+library(vip)
+xgb_fit |> 
+  fit(data = training) |> 
+  extract_fit_parsnip() |> 
+  vip(geom = 'point')
+
+final <- last_fit(xgb_fit,
+         books_split)
+
+final |> 
+  collect_predictions() |> View()
+
+final |> 
+  collect_metrics()
+```
+
+
+##ARIMA and ETS fit on the same dataset
+```{r}
+library(tsibble)
+top_10_books_ts_df <- top_10_books_checkouts |> 
+  mutate(across(where(is.character), factor)) |>
+  as_tsibble(key = c(Title, Publisher, PublicationYear), index = year_month) |> 
+  fill_gaps(Checkouts = 0)
+
+top_10_books_ts_df |> 
+  ggplot(aes(x = year_month, y = Checkouts, color = Title))+
+  geom_line()
+
+
+top_10_books_ts_training <- top_10_books_ts_df |>  filter(year_month < yearmonth('2023 Nov'))
+top_10_books_ts_testing <- top_10_books_ts_df |>  filter(year_month >= yearmonth('2023 Nov'))
+
+library(fable)
+tic()
+plan(multisession, workers = 10)
+top_10_books_ts_training |> 
+  model(
+    ets = ETS(Checkouts),
+    arima = ARIMA(Checkouts),
+    snaive = SNAIVE(Checkouts)
+  )
+toc()
+
+test_forecast <- top_10_books_ts_training |> 
+  model(
+    ets = ETS(Checkouts),
+    arima = ARIMA(Checkouts),
+    snaive = SNAIVE(Checkouts)
+  ) 
+test_forecast |> 
+  forecast(h = '20 months') |> 
+  filter(Title == 'Educated : a memoir / Tara Westover.') |> View()
+  autoplot(filter(top_10_books_ts_training, Title == 'Educated : a memoir / Tara Westover.'), level =NULL)
+```
+
