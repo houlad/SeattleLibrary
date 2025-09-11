@@ -1,0 +1,555 @@
+---
+title: "Working Title"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+#What do people read
+#Are they reading less broadly
+
+```{r package_load, echo=FALSE}
+#| message: false
+#| warning: false
+library(tidyverse)
+library(duckdb)
+library(duckplyr)
+#nice tables
+library(gt)
+#composable plots
+library(patchwork)
+#text annotation on line graphs
+library(ggrepel)
+#nice color palettes
+library(ggsci)
+#highlighting specific lines in a plot
+library(gghighlight)
+#various helper functions
+source("helper_functions.R")
+```
+
+One of my favorite public goods has always been the library. Going all the way back to elementary school and the glorious pan-pizza summer reading challenges, there was always something magical about being able to go to this place and have the world of books at your fingertips. And these endless stacks of books weren't just at your fingertips, they were *free*. All that was asked was that you brought them back after you were done--so that someone else could enjoy them! Needless to say, I've had a soft spot for libraries for almost my entire life.
+
+After discovering that I was a data nerd, one of the first things I thought about looking into was library data. At that time though, I couldn't find any good library data sources, so the idea went on the back shelf where it has been gathering dust ever since. Well friends, no longer! A couple months ago I discovered that the Seattle Public Library has a portal where you can access checkout data both at a [monthly aggregation](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) and a [log of all the physical item checkouts](https://data.seattle.gov/Community-and-Culture/Checkouts-By-Title-Physical-Items-/5src-czff/about_data) going back all the way to 2005.
+
+At \~50m and \~120m rows, these datasets are huge and there are a whole host of interesting avenues to traverse and questions to answer. Having already looked into these datasets, I know I'm going to focus on the monthly aggregation data, but I want access to a daily timestamp for things like viewing checkouts by hour or day so I'm going to keep it around. For now, I want to do a fun little EDA and then I'm going to build a model to predict the number of monthly checkouts of a book. Let's go ahead and dive in!
+
+# What the heck does this data set look like?
+
+First things first, I want to get a sense of what is in the dataset. Since these are huge csv files, I'm going to use duckdb to work with them a little more quickly, but I'll still need to be pretty careful with the sorts of queries I'm doing if I don't want to wait all day. Duckdb makes this all pretty easy and we just make a local duckdb instance and import the csv files into their respective databases. I can't use the defaults with duckdb_read_csv because there are some weird values in columns like ID that confuse the parser, but specifying the variable types manually takes care of that issue.
+
+```{r data_import, echo = TRUE, eval = TRUE}
+#Connect to local duckdb
+con <- dbConnect(duckdb(), dbdir = "duckdb_monthly", read_only = FALSE)
+con2 <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
+
+#initial reading of the csv file. Have to manually specify types because ID
+#randomly(?) has a couple values with characters in it
+# duckdb_read_csv(con, "checkouts", "/Users/athou/Downloads/Checkouts_By_Title__Physical_Items__20250312.csv",
+#                 col.types = c(
+#                   ID = "VARCHAR", # some id's have characters in them for some reason
+#                   CheckoutYear = "BIGINT",
+#                   BibNumber = "BIGINT",
+#                   ItemBarcode = "VARCHAR",
+#                   ItemType = "VARCHAR",
+#                   Collection = "VARCHAR",
+#                   CallNumber = "VARCHAR",
+#                   ItemTitle = "VARCHAR",
+#                   Subjects = "VARCHAR",
+#                   CheckoutDateTime = "DATETIME"
+#                 ))
+# 
+# duckdb_read_csv(con, "checkouts_monthly", "/Users/athou/Downloads/Checkouts_by_Title_20250813.csv",
+#                 col.types = c(
+#                   UsageClass = "VARCHAR",
+#                   CheckoutType = "VARCHAR",
+#                   MaterialType = "VARCHAR",
+#                   CheckoutYear = "BIGINT",
+#                   CheckoutMonth = "BIGINT",
+#                   Checkouts = "BIGINT",
+#                   Title = "VARCHAR",
+#                   ISBN = "VARCHAR",
+#                   Creator = "VARCHAR",
+#                   Subjects = "VARCHAR",
+#                   Publisher = "VARCHAR",
+#                   PublicationYear = "VARCHAR"
+#                 ))
+
+#connect to the database instances and create a table to work with
+daily_checkouts <- tbl(con2, 'checkouts')
+monthly_checkouts <- tbl(con, 'checkouts_monthly')
+```
+
+With this connection made, we can easily get a quick glimpse at the variables in our datasets. Taking a look at the [data](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) dictionary and the first couple rows of the dataset, we see that we have everything from usageclass--ie whether an item is a physical book or a digital one to the materialtype of the item, the subjects, etc.
+
+```{r dataset_variables}
+example_data <- monthly_checkouts |> 
+  head(100) |> 
+  collect()
+
+example_data |> 
+  head(2) |> 
+  gt()
+```
+
+One thing I like to do first is to get a bunch of counts of important sounding variables to get some sense of the scope and variation of certain variables. Since I'm doing this several times, I'll wrap it in a quick little function.
+
+```{r exploratory_counts}
+quick_counts <- function(.data, count_var){
+  #.data should be a tbl db connection
+  .data |> 
+    #make nice snake_case variable names
+    janitor::clean_names() |> 
+    count({{count_var}}) |> 
+    arrange(desc(n)) |> 
+    collect()
+}
+
+usage_class_counts <- quick_counts(monthly_checkouts, usage_class) 
+material_type_counts <- quick_counts(monthly_checkouts, material_type) |> head(21)
+checkout_year_counts <- quick_counts(monthly_checkouts, checkout_year) |>  as_tibble()
+publisher_counts <- quick_counts(monthly_checkouts, publisher) |> head(21)
+total_checkouts <- monthly_checkouts |> 
+  janitor::clean_names() |>   
+  summarise(total_checkouts = sum(checkouts)) |> 
+  collect()
+
+
+#quick little table formatter function
+table_format <- function(table, is_percent = FALSE, n = 'Total'){
+  tab <- table |>  
+    tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+                  )
+      ),
+      locations = cells_column_labels(everything())
+    )
+  if(is_percent){
+    tab |> 
+      fmt_percent(
+        columns = c(n)
+      )
+  }else {
+    tab |>
+      fmt_number(
+        columns = c(n),
+        decimals = 0
+    ) 
+  }
+
+}
+
+wrap_table(publisher_counts |> gt() |> table_format() |> cols_label(n = "Total")) + 
+  wrap_table(material_type_counts |> gt() |>  table_format()) + 
+  wrap_table(checkout_year_counts |>  gt() |>  table_format())
+
+```
+
+So these tables are a little confusing. Remember we are working with monthly aggregations, so when the publisher table says Random House, Inc. had a total of 1,739,246, what exactly is that? Well, it's just the number of rows where Random House, Inc was the publisher of the checked out book--and each row is a count of the number of checkouts of a specific item for that specific year and month. The same goes for material type and checkout year. The main thing I can see from this is that we potentially have to deal with a lot of NA values and there are a lot of different items that the library lends. Books and ebooks are pretty obvious, but a lot of people don't realize how much music and video content the library lends out.
+
+```{r }
+wrap_table(usage_class_counts |>  gt() |>  table_format())+
+  wrap_table(total_checkouts |>  gt() |>  fmt_number(decimals = 0))
+```
+
+We can also get a quick look at the physical vs digital checkouts--physical outnumbers digital almost 3 to 1. And our first look into just how huge the volume of lending for the Seattle library is-- from 2005 to mid 2025, the Seattle public library has lent over 167 million items! That's a whole lot of knowledge shared with the city.
+
+# Narrowing our Focus
+
+Since this dataset is so broad and deep, I'm going to immediately focus on just books. I'm sure there are equally interesting lines of discovery in movies, music, etc, but I have to draw the line somewhere! I'm going to try to
+answer three, somewhat broad, questions in this exploratory analysis. 
+
+1. How much are people reading?
+2. What are people reading?
+3. Are people reading a narrower subset of books than they used to?
+
+```{r my_plot_theme}
+my_plot_theme <- function(base_family="Karla", 
+                          base_size =12,
+                          plot_title_family='Karla',
+                          plot_title_size = 20,
+                          grid_col='#dadada') { 
+  aplot <- ggplot2::theme_minimal(base_family=base_family, base_size=base_size) #piggyback on theme_minimal 
+  aplot <- aplot + theme(panel.grid=element_line(color=grid_col))
+  aplot <- aplot + theme(plot.title=element_text(size=plot_title_size, 
+                                                 family=plot_title_family))
+  aplot <- aplot + theme(axis.ticks = element_blank())
+  aplot
+}
+
+#generic line plot tweaks for most/all line plots this post
+line_plot_tweaks <- function() {
+  list(
+    scale_x_date(minor_breaks = 'year'),
+    scale_y_continuous(labels = scales::number_format(big.mark = ',')),
+    expand_limits(y = 0), 
+    scale_color_aaas()
+    )
+}
+ 
+ 
+```
+
+## How much are people reading these days?
+
+I think a decent approach to the 'how much' question is to base it on total checkouts per month. Luckily,
+the dataset provides almost exactly that.
+
+### Total checkouts per month
+```{r total_book_checkouts_per_month}
+total_checkouts_by_month <- monthly_checkouts |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
+  group_by(checkout_year, checkout_month) |> 
+  summarise(monthly_checkouts = sum(checkouts, na.rm = TRUE)) |> 
+  collect() |> 
+  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
+                              "%Y %m"))
+
+total_checkouts_by_month |> 
+  ggplot(aes(x = year_month, y = monthly_checkouts))+
+  geom_line(linewidth = .6)+
+  geom_smooth(method = 'lm', se = FALSE, color = '#008B45FF', linewidth = .5)+
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'Number of Books Checked Out Per Month',
+    subtitle = 'Includes Physical Books, Ebooks and Audiobooks'
+  )+
+  annotate(geom = 'point', x = as.Date('2020-03-23'), y = 360000, size = 8, shape = 21,
+           fill = 'transparent', color = '#BB0021FF')+
+  annotate(geom = 'text', x = as.Date('2018-03-01'), y = 360000,
+           label = 'March 2020, \nCOVID lockdowns begin')+
+  annotate(geom = 'point', x = as.Date('2024-06-15'), y = 510000, size = 8, shape = 21,
+           fill = 'transparent', color = '#BB0021FF')+
+  annotate(geom = 'text', x = as.Date('2023-01-01'), y = 475000,
+           label = 'Seattle Library Under \n Ransomware Attack')+
+  my_plot_theme()+
+  line_plot_tweaks()
+
+```
+
+Somewhat surprisingly, at least to me, there is a pretty strong upward trend. I would have guessed that fewer people were renting books from the library, but alas, I was wrong. There are two interesting points that jump out immediately though. One is the now familiar COVID 'dip' and the other was a bit mysterious to me--someone decidedly *not* from the west coast. After a little googling, it turns out Seattle's library system suffered a [ransomware attack](https://www.libraryjournal.com/story/seattle-public-library-recovering-from-ransomware-attack) in May 2024. It is hard to pin down exactly what services went down and when they came back up, but the dataset is missing data from May and June of 2024, and it appears either July was also affected or the data for the month is incomplete. But even with those two major disruptions, checkouts keep rising. Seattle's public library
+system now lends out over 700k books per month. 
+
+### Total checkouts per month by type
+
+But we can do better than just a monthly aggregation. This dataset is much richer than that! What if we disaggregate the monthly totals--into books, audiobooks and ebooks. Are all book rentals trending in the same
+direction?
+
+```{r disaggregated_total_books_by_month}
+material_type_checkouts_by_month <- monthly_checkouts |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |>
+  group_by(checkout_year, checkout_month, material_type) |> 
+  summarise(monthly_checkouts = sum(checkouts)) |> 
+  collect() |> 
+  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
+                              "%Y %m"))
+
+#retrieve the last date to use to attach annotation to
+get_end_labels <- function(df){
+  #takes a summarised df and returns a df filtered to just the last month
+  df |> 
+    ungroup() |> 
+    filter(year_month == max(year_month))
+}
+
+
+physical_book_pre_covid <- material_type_checkouts_by_month |> 
+  filter_by_condition(material_type == 'BOOK', year_month <= '2020-02-01') |> 
+  ungroup() |> 
+  summarise(average = mean(monthly_checkouts))
+  
+physical_book_post_covid <- material_type_checkouts_by_month |> 
+  filter_by_condition(material_type == 'BOOK', year_month > '2020-02-01') |> 
+  ungroup() |> 
+  summarise(average = mean(monthly_checkouts))
+
+#get percentage increase in ebooks 
+perc_increase <- material_type_checkouts_by_month |> 
+  ungroup() |> 
+  filter_by_condition(material_type == "EBOOK", year_month == '2020-01-01' | year_month == '2020-05-01') |>
+  #make sure rows are in the correct order for calculating leads
+  arrange(desc(year_month)) |> 
+  mutate(perc_inc = (monthly_checkouts - lead(monthly_checkouts))/lead(monthly_checkouts) * 100)
+
+material_type_checkouts_by_month |> 
+  ggplot(aes(x = year_month, y = monthly_checkouts, color = material_type))+
+  geom_line(linewidth = .6)+
+  geom_label(data = get_end_labels(material_type_checkouts_by_month),
+            aes(x = year_month, y = monthly_checkouts, label = material_type),
+            hjust = -.2, fontface = 'bold', size = 3, family = 'Karla')+
+  line_plot_tweaks()+
+  scale_x_date(limits = c(as.Date('2005-01-01'), as.Date('2027-01-01')),
+               minor_breaks = 'year')+
+  labs(
+    x = NULL,
+    y = NULL,
+    title = 'Total Monthly Checkouts by Book Type',
+    subtitle = 'How many e-books, audiobooks, and physical books did people rent?'
+  )+
+  geom_segment(data = physical_book_pre_covid, aes(x = as.Date('2005-01-01'),
+                                             xend = as.Date('2020-02-01'),
+                                             y = average), color = 'gray',linetype = 'dashed')+
+  geom_segment(data = physical_book_post_covid, aes(x = as.Date('2020-03-01'),
+                                              xend = as.Date('2025-09-01'),
+                                              y = average), color = 'gray',
+                                           linetype = 'dashed')+
+  annotate(geom = 'text', x = as.Date('2005-07-01'), y = 325000,
+           label = round(physical_book_pre_covid$average, 0),
+           size = 3, family = "Karla")+
+  annotate(geom = 'text', x = as.Date('2025-07-01'), y = 190000,
+           label = round(physical_book_post_covid$average, 0),
+           size = 3, family = "Karla")+
+  annotate(geom = 'rect', xmin = as.Date('2019-06-01'),
+           xmax = as.Date('2021-01-01'), ymin = 180000, ymax = 260000,
+           alpha = .10, col = 'black')+
+  annotate(geom = 'text', x = as.Date("2016-06-01"), y = 250000,
+           label = glue::glue("{round(perc_increase$perc_inc[1], 0)}% increase in ebook rentals\n from Jan 2020 to May 2020"), family = "Karla")+
+  my_plot_theme()+
+  theme(
+    legend.position = 'None'
+  )
+  
+```
+
+Well, not exactly! Immediately, you can see that physical book rentals were decimated by COVID. If I remember correctly, my local library stopped lending completely for the first couple months and even after that it was fairly limited. More confusing is why physical books haven't really recovered. You can see that the average number of physical books that are checked out is well over 100k lower than pre-pandemic.
+
+But if we just look at the average monthly checkout from 2019 vs 2024, we actually see the reverse--*more* books are being checked out. This lines up with our first graph of checkouts by month which, even with the COVID dip, showed a steadily increasing volume of checkouts for the system as a whole. What appears to have happened is that the COVID dip in physical checkouts coincided with a nearly 30% increase in ebook rentals. That bump in ebook adoption has not gone away and as you can see from the plot, ebooks(and audiobooks) are actually both checked out more often that physical books at this point.
+
+```{r table_pre_post_pandemic_comparison}
+material_type_checkouts_by_month |> 
+  ungroup() |> 
+  filter(checkout_year == 2019 | checkout_year == 2024) |>
+  group_by(checkout_year) |> 
+  summarise(n = mean(monthly_checkouts)) |> 
+  gt() |> 
+  table_format() |> 
+  cols_label(n = 'Average Monthly Checkouts')
+```
+
+### Total checkouts digital versus physical
+
+If we look at the breakdown of just digital versus physical checkouts, we can see that the pandemic
+serves as a sort of paradigm shift. Digitial checkouts had been catching up to physical for nearly a decade,
+but the inaccessibility of physical books for the COVID period seems to have nudged people to make the digital
+swap. Physical book checkouts seem to have stabilized at a level roughly 60% lower than pre-pandemic,
+while digital checkouts have continued their upward march. 
+```{r digital_v_physical_rentals}
+usage_class_monthly <- monthly_checkouts |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
+  group_by(checkout_year, checkout_month, usage_class) |> 
+  summarise(monthly_checkouts = sum(checkouts)) |> 
+  collect() |> 
+  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, ' ', checkout_month), "%Y %m")))
+
+usage_class_monthly |> 
+  ggplot(aes(x = year_month, y = monthly_checkouts, color = usage_class))+
+  geom_line(linewidth = .6)+
+  geom_label(data = get_end_labels(usage_class_monthly),
+            aes(x = year_month, y = monthly_checkouts, label = usage_class),
+            hjust = -.2, fontface = 'bold', size = 3, family = 'Karla')+
+  labs(
+    x = NULL,
+    y = NULL, 
+    title = "Digital vs Physical Checkouts by Month",
+    subtitle = "Digital checkouts are now significantly more common than physical checkouts."
+  )+
+  line_plot_tweaks()+
+  scale_x_date(limits = c(as.Date('2005-01-01'), as.Date('2027-01-01')),
+               minor_breaks = 'year')+
+  my_plot_theme()+
+  theme(
+    legend.position = "None"
+  )
+```
+
+### Growth of digital monthly checkouts
+What exactly does that growth look like? Month over month, you see ebooks and audiobooks growing at roughly
+2-3%. There is slight drop, ~-1%,  in physical books, but I'm not sure if that is just a pandemic related 
+artifact, or a true trend. Remember, before COVID, physical book checkouts were not exactly growing, but they 
+were quite stable in their checkout numbers.
+
+```{r month_to_month_percent_change_functions}
+# generates a month_over_month percent change df from a material type summarised df
+month_over_month_percent_change_df <- function(df, filter_var){
+  # validate df input
+  stopifnot(is.data.frame(df))
+
+  df |> 
+    ungroup() |> 
+    filter_by_condition({{filter_var}}) |> 
+    group_by(material_type) |> 
+    arrange(year_month) |> 
+    mutate(monthly_change = round((monthly_checkouts - lag(monthly_checkouts))/lag(monthly_checkouts), 2))
+}
+
+# calculates a median value for a given percent change df
+calculate_median_monthly_change <- function(perc_change_df){
+  perc_change_df |> 
+    summarise(median_monthly_change = median(monthly_change, na.rm = TRUE))
+}
+
+# generates a line plot of monthly percent change in # of checkouts
+plot_monthly_change <- function(df1, median_df, adj_fact = 0, use_facet = TRUE,
+                                .title = NULL, .subtitle = NULL, label_x = NULL, label_y = NULL,
+                                adjust_color = FALSE, .color = NULL){
+  #validate for data frames
+  stopifnot(is.data.frame(df1))
+  stopifnot(is.data.frame(median_df))
+  
+  
+  #month_over_month changes df
+  plot <- df1 |> 
+    ggplot(aes(x = year_month, y = monthly_change, color = material_type))+
+    geom_line()+
+    #hline and text use data from the median_df 
+    geom_hline(data = median_df, aes(yintercept = median_monthly_change),
+             color = 'black', linetype = 'dashed')+
+    geom_text(data = median_df, 
+            aes(label = median_monthly_change,
+                x = as.Date("2005-01-01"),
+                y = median_monthly_change + (median_monthly_change * adj_fact)),
+            color = 'black', family = 'Karla', size = 3.5, nudge_x = -100)
+  #make use of facets if specified
+  if(use_facet){
+    plot <- plot +
+      facet_wrap(~material_type, scales = 'free_y')
+  }
+  
+  #standard formatting to keep post plots consistent
+  plot <- plot +
+      my_plot_theme()+
+      line_plot_tweaks()+
+      theme(
+      legend.position = 'None'
+    )+
+    labs(
+      x = label_x,
+      y = label_y,
+      title = .title,
+      subtitle = .subtitle
+      
+    )+
+    scale_y_continuous(label = scales::label_percent())
+  
+  #if adjusted_color toggled, manually change color to input color
+  if(adjust_color){
+    plot <- plot +
+      scale_color_manual(values = .color)
+  }
+  plot
+}
+
+```
+
+```{r month_to_month_percent_plots}
+
+# build digital plots
+month_to_month_percent_change_digital <- 
+  month_over_month_percent_change_df(material_type_checkouts_by_month,
+                                  material_type %in% c("EBOOK", "AUDIOBOOK")) 
+
+digital_plots <- plot_monthly_change(df1 = month_to_month_percent_change_digital,
+                    median_df = calculate_median_monthly_change(month_to_month_percent_change_digital),
+                    adj_fact = 1, use_facet = TRUE,
+                    label_y = "Monthly % Change",
+                    .title = "Month over Month % Change in Checkouts",
+                    .subtitle = 'Ebook and Audiobook usage continues to grow(slowly) month on month. Physical book % change is skewed by COVID,\n but when 2020 is removed, physical checkouts might still be in decline.')
+
+
+# build physical plots
+month_to_month_percent_change_physical <- 
+  month_over_month_percent_change_df(material_type_checkouts_by_month,
+                                     material_type == 'BOOK')
+
+month_to_month_percent_change_physical_no_2020 <- 
+  month_over_month_percent_change_df(material_type_checkouts_by_month,
+                                     material_type == 'BOOK') |> 
+  filter_by_condition(checkout_year != 2020)
+
+physical_plot <- plot_monthly_change(df1 = month_to_month_percent_change_physical,
+                    median_df = calculate_median_monthly_change(month_to_month_percent_change_physical),
+                    adj_fact = -500, use_facet = TRUE, adjust_color = TRUE,
+                    label_y = "Monthly % Change",
+                    .color = '#008B45FF')
+
+physical_no_2020_plot <- plot_monthly_change(df1 = month_to_month_percent_change_physical_no_2020,
+                    median_df = calculate_median_monthly_change(month_to_month_percent_change_physical_no_2020),
+                    label_y = NULL,
+                    adj_fact = -4, use_facet = TRUE, adjust_color = TRUE,
+                    .color = "#008B45FF")
+
+digital_plots / (physical_plot + physical_no_2020_plot)
+
+```
+
+Looking at the plot makes this a little clearer. We can see that while all types of checkouts vary a lot,
+the digital mediums are clearly centered above 0, while the physical books essentially look like they are 
+randomly flucuating around 0. It is a subtle difference, but 2% growth a year versus no growth is a large difference magnified by time. 2% a year over 10 years would be nearly 22% growth in ebook checkouts!
+
+
+```{r median_monthly_changes_table}
+material_type_checkouts_by_month |> 
+  month_over_month_percent_change_df(material_type %in% c("EBOOK", "BOOK", "AUDIOBOOK")) |> 
+  calculate_median_monthly_change() |> 
+  gt() |> 
+  table_format(is_percent = TRUE, n = 'median_monthly_change')
+```
+
+
+### A look at variation over the years
+
+One last way of looking at this breaking it down year by year. 
+```{r yearly_checkout_variation}
+material_type_checkouts_by_month |> 
+  #group_by(material_type) |> 
+  summarise(monthly_total = sum(monthly_checkouts)) |> 
+  mutate(checkout_year = as.character(checkout_year)) |> 
+  ggplot(aes(x = as.factor(checkout_month), y = monthly_total,  group = checkout_year, color = checkout_year))+
+  geom_line()+
+  gghighlight(checkout_year >= 2019, use_direct_label = TRUE,
+              unhighlighted_params = list(color = alpha("grey85", 1)),
+              calculate_per_facet = TRUE)+
+  #facet_wrap(~material_type, scales = 'free_y')+
+  theme(
+    legend.position = 'None'
+  )+
+  scale_x_discrete(labels = month.abb)+
+  scale_y_continuous(labels = scales::label_comma())+
+  scale_color_aaas()+
+  labs(
+    x = NULL,
+    y = "Total Checkouts",
+    title = 'Total Checkout Variation over the Years',
+    subtitle = 'After a pandemic related dip, library checkouts rebounded and continue to grow year after year.'
+  )+
+  my_plot_theme()
+
+
+```
+We can confirm with this plot what we saw in figure 1--year after year more books are being 
+checked out. It is also worth noting that we see surprisingly little monthly variation in checkouts. I did
+look into this more closely, but there just was not that much there. I went into it thinking people probably
+read more in summer months and maybe during the winter(less outdoor activity, people often have time off, etc),
+but that was, if anything, weakly supported by the data, so I left it out that rabbit hole.
+
+It should be noted that we really cannot make any definitive statements with this information--we cannot
+say that people are reading more just because more books are checked out. For example, what if people are 
+checking out more books from the library because they are *buying* fewer books? Or what if people are checking 
+out more books because it is essentially zero cost to download an ebook or audiobook--if you do not finish it(
+or even start it), it does not matter because you never had to physically go pickup or return something.
+
+So there are a whole host of reasons we cannot use this information to say people are readying *more*,
+but we can say that people are using the *library* more--at least for books. And that is good news in my book.
+
+
+
+
