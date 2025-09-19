@@ -14,6 +14,7 @@ source("helper_functions.R")
 
 #Connect to local duckdb
 con <- dbConnect(duckdb(), dbdir = "duckdb_monthly", read_only = FALSE)
+con2 <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
 ```
 
 
@@ -78,7 +79,8 @@ base_books <- checkouts_monthly |>
 library(tidymodels)
 base_books_df <- base_books |> 
   collect() |> 
-  mutate(year_month = tsibble::make_yearmonth(year = CheckoutYear, month = CheckoutMonth)) 
+  mutate(year_month = tsibble::make_yearmonth(year = CheckoutYear, month = CheckoutMonth),
+         childrens_book = if_else(grepl("Children", Publisher), TRUE, FALSE)) 
 
 #find the top 10 most checkouted out books across the whole dataset and then filter to just those
 #books
@@ -163,8 +165,213 @@ final |>
   collect_metrics()
 ```
 
+
+#TODO Build modeling function; Build workflowset
 Generating new variables to try to improve accuarcy
 ```{r}
+base_books_df <- checkouts_monthly |>
+  filter(UsageClass == "Physical", MaterialType == 'BOOK') |>
+  select(-ISBN) |>
+  filter(!if_any(everything(), is.na)) |>
+  collect() |>
+  mutate(year_month = tsibble::make_yearmonth(year = CheckoutYear, month = CheckoutMonth),
+         childrens_book = if_else(grepl("Children", Publisher), TRUE, FALSE))
+
+
+top_10_books <- base_books_df |>
+  group_by(Title) |>
+  summarise(total_checks = sum(Checkouts)) |>
+  arrange(desc(total_checks)) |>
+  slice_head(n = 10) |>
+  pull(Title)
+
+top_10_books_checkouts <- base_books_df |>
+  semi_join(data.frame(Title = top_10_books), join_by(Title)) |>
+  select(-UsageClass, -CheckoutType, -MaterialType, -Subjects)
+
+top_10_books_final <- top_10_books_checkouts |>
+  mutate(across(where(is.character), factor))
+
+top_10_books_new_features_2 <- top_10_books_final |>
+  group_by(Title, Publisher, PublicationYear) |>
+  arrange(year_month) |>
+  mutate(lag_1 = lag(Checkouts, 1),
+         lag_2 = lag(Checkouts, 2),
+         lag_6 = lag(Checkouts, 6),
+         lag_12 = lag(Checkouts, 12),
+         lag_18 = lag(Checkouts, 18),
+         lag_24 = lag(Checkouts, 24),
+         Checkout_book_sd = sd(Checkouts),
+         Rolling_avg_2_month = zoo::rollmean(Checkouts, 2, fill = NA, align = 'right'),
+         Rolling_avg_3_month = zoo::rollmean(Checkouts, 3, fill = NA, align = 'right'),
+         Rolling_avg_6_month = zoo::rollmean(Checkouts, 6, fill = NA, align = 'right'),
+         Rolling_avg_12_month = zoo::rollmean(Checkouts, 12, fill = NA, align = 'right'),
+         is_new = as.factor(!duplicated(Title)),
+         months_old = rank(year_month)) |>
+  ungroup() |>
+  group_by(year_month) |>
+  mutate(avg_book_checkouts = mean(Checkouts),
+         median_book_checkouts = median(Checkouts),
+         month_sd = sd(Checkouts),
+         is_summer = if_else(CheckoutMonth %in% c(6, 7, 8), 1, 0),
+         is_december = if_else(CheckoutMonth == 12, 1, 0),
+         is_childrens_book = if_else(childrens_book, 1, 0)) |>
+  ungroup() |> 
+  janitor::clean_names()
+
+
+top_10_books_new_features <- checkouts_monthly |>
+  select(-ISBN) |>
+  build_base_dataset(condition = c(UsageClass == "Physical", MaterialType == 'BOOK',
+                              !if_any(everything(), is.na)),
+                variable = c(-UsageClass, -CheckoutType, -MaterialType,
+                             -Subjects)) |> 
+  select_top_n_books(.n = 10) |> 
+  add_features(add_rolling_avg_vars = TRUE,
+               add_lagged_vars = TRUE, 
+               .n_lags = c(1, 2, 3, 6, 12),
+               .n_avgs = c(2, 3, 4, 5, 6, 12 ))
+
+```
+
+##Model Specifications
+```{r}
+library(tidymodels)
+library(future)
+library(tictoc)
+library(vip)
+#using 90% of the data as training, 10% testing 
+#This is ordered by year_month, so the last 10% of the dataset is used as testing set
+#This ends up being Dec 2023 - July 2025
+books_split <- initial_time_split(top_10_books_new_features|> arrange(year_month), prop = .9)
+training <- training(books_split)
+testing <- testing(books_split)
+
+#xgboost_recipe
+xgboost_recipe <- recipe(
+  checkouts ~ checkout_year + checkout_month + publication_year + is_new +
+              lag_1 + lag_2 + lag_3 + lag_6 + lag_12+ 
+              rolling_avg_2_month + rolling_avg_3_month + rolling_avg_4_month + 
+              rolling_avg_5_month + rolling_avg_6_month +
+              avg_book_checkouts + is_summer + is_december +
+              month_sd + months_old + median_book_checkouts+
+              is_childrens_book+ checkout_book_sd,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+# specify spec
+xgboost_spec <- 
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("xgboost")
+
+#build xgboost tuning grid
+grid <- grid_space_filling(
+  tree_depth(),
+  min_n(),
+  learn_rate(),
+  trees(),
+  size = 10
+)
+
+# xgboost workflow
+xgboost_workflow <-
+  workflow() |> 
+  add_recipe(xgboost_recipe) |> 
+  add_model(xgboost_spec)
+
+# generate folds for cross validation
+folds <- vfold_cv(training)
+
+#set of metrics to be used for tuning and evaluation
+my_metrics <- metric_set(rmse, mape, mae)
+
+#fit model and tune grid parameters
+#using tic/toc to see how long this takes; using future::plan to fit in parallel
+tic()
+plan(multisession, workers = 14)
+xgboost_tune <- 
+  tune_grid(xgboost_workflow, resamples = folds, grid = grid, 
+            control = control_grid(verbose = TRUE),#, save_pred = TRUE, save_workflow = TRUE),
+            metrics = my_metrics)
+toc()
+
+#select the best tuning parameters
+best_fit <- select_best(xgboost_tune)
+
+#feed the optimal tuning parameters into the workflow
+xgb_fit <- finalize_workflow(xgboost_workflow,
+                             best_fit)
+
+#with the best model in hand, fit the final model on the training set; then evaluate on the test set
+final <- last_fit(xgb_fit,
+         books_split)
+
+#define which metrics I want to see
+books_metrics <- metric_set(rmse, mape, mae)
+
+#View those metrics
+books_metrics(final |> collect_predictions(),
+             truth = checkouts,
+             estimate = .pred)
+
+
+#bind predictions to our testing dataset and calculate residuals
+#Just interested in looking at residuals really
+final |> 
+  collect_predictions() |> 
+  zero_bound_predictions() |> 
+  bind_cols(testing |>  select(-checkouts)) |> 
+  mutate(resid = checkouts - .pred) |> View()
+
+
+#View metrics with negative predictions bound to be equal to zero
+books_metrics(
+  final |> 
+    collect_predictions() |>
+    zero_bound_predictions(),
+  truth = checkouts, estimate = .pred
+  )
+
+#Plot the most important features in the model
+xgb_fit |> 
+  fit(data = training) |> 
+  extract_fit_parsnip() |> 
+  vip(geom = 'point')
+
+#plot predictions vs actuals
+final |> 
+  collect_predictions() |> 
+  #zero_bound_predictions() |> 
+  ggplot(aes(x = checkouts, y = .pred))+
+  geom_point()+
+  geom_abline(color = 'red')
+```
+
+
+```{r}
+deployable_model <- xgb_fit |>  fit(training)
+v <- vetiver_model(deployable_model, 'book_preds')
+model_board <- pins::board_folder(path = 'data/testing', versioned = TRUE)
+vetiver_pin_write(board = model_board, v)
+vetiver_pin_read(model_board, book_preds)
+
+plumber::pr() |> 
+  vetiver::vetiver_api(v) |> 
+  plumber::pr_run()
+
+base_url <- "127.0.0.1:24525/"
+url <- paste0(base_url, 'ping')
+r = httr::GET(url)
+```
+
+##Lightgbm Fit
+```{r}
+library(tidymodels)
+library(bonsai)
 top_10_books_new_features <- top_10_books_final |> 
   group_by(Title, Publisher, PublicationYear) |> 
   arrange(year_month) |> 
@@ -190,8 +397,8 @@ testing <- testing(books_split)
 
 
 
-xgboost_recipe <- recipe(
-  Checkouts ~ CheckoutYear + CheckoutMonth + Title + Creator + Publisher + PublicationYear +
+lightgbm_recipe <- recipe(
+  Checkouts ~ CheckoutYear + CheckoutMonth + PublicationYear +
               Checkout_lag_1_month + Checkout_lag_2_month + Checkout_lag_6_month +
               Rolling_average_2_month + Rolling_average_6_month + Rolling_average_12_month+
               average_book_checkouts + is_summer + is_december + Rolling_average_3_month,
@@ -199,20 +406,20 @@ xgboost_recipe <- recipe(
   step_dummy(all_nominal_predictors()) 
 
 
-xgboost_spec <- 
+lightgbm_spec <- 
   boost_tree(trees = tune(),
              learn_rate = tune(),
              tree_depth = tune(),
              min_n = tune()) |> 
   set_mode("regression") |> 
-  set_engine("xgboost")
+  set_engine("lightgbm")
 
-xgboost_workflow <-
+lightgbm_workflow <-
   workflow() |> 
-  add_recipe(xgboost_recipe) |> 
-  add_model(xgboost_spec)
+  add_recipe(lightgbm_recipe) |> 
+  add_model(lightgbm_spec)
 
-xgb_grid <- grid_space_filling(
+lightgbm_grid <- grid_space_filling(
   tree_depth(),
   min_n(),
   learn_rate(),
@@ -226,32 +433,122 @@ library(future)
 library(tictoc)
 tic()
 plan(multisession, workers = 14)
-xgboost_tune <- 
-  tune_grid(xgboost_workflow, resamples = folds, grid = xgb_grid, 
-            control = control_grid(verbose = TRUE),
+lightgbm_tune <- 
+  tune_grid(lightgbm_workflow, resamples = folds, grid = lightgbm_grid, 
+            control = control_grid(verbose = TRUE, save_pred = TRUE, save_workflow = TRUE),
             metrics = my_metrics)
 toc()
 
-best_fit <- select_best(xgboost_tune)
+best_fit_lightgbm <- select_best(lightgbm_tune)
 
-xgb_fit <- finalize_workflow(xgboost_workflow,
-                             best_fit)
+lightgbm_fit <- finalize_workflow(lightgbm_workflow,
+                             best_fit_lightgbm)
 
 library(vip)
-xgb_fit |> 
+lightgbm_fit |> 
   fit(data = training) |> 
   extract_fit_parsnip() |> 
   vip(geom = 'point')
 
-final <- last_fit(xgb_fit,
+final_lightgbm <- last_fit(lightgbm_fit,
          books_split)
 
-final |> 
+final_lightgbm |> 
   collect_predictions() |> View()
 
-final |> 
+final_lightgbm |> 
   collect_metrics()
 ```
+
+## Ensembling XGBoost and LightGBM
+```{r}
+library(bonsai)
+library(stacks)
+books_split <- initial_time_split(top_10_books_new_features|> arrange(year_month), prop = .9)
+
+training <- training(books_split)
+testing <- testing(books_split)
+
+folds <- vfold_cv(training, strata = Checkouts)
+
+xgboost_recipe <- recipe(
+  Checkouts ~ CheckoutYear + CheckoutMonth + Title + Publisher + Creator + PublicationYear +
+              Checkout_lag_1_month + Checkout_lag_2_month + Checkout_lag_6_month +
+              Rolling_average_2_month + Rolling_average_6_month + Rolling_average_12_month+
+              average_book_checkouts + is_summer + is_december + Rolling_average_3_month,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+xgboost_spec <- 
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("xgboost")
+
+lightgbm_recipe <- recipe(
+  Checkouts ~ CheckoutYear + CheckoutMonth + PublicationYear +
+              Checkout_lag_1_month + Checkout_lag_2_month + Checkout_lag_6_month +
+              Rolling_average_2_month + Rolling_average_6_month + Rolling_average_12_month+
+              average_book_checkouts + is_summer + is_december + Rolling_average_3_month,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+
+lightgbm_spec <- 
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("lightgbm")
+
+all_workflows <- 
+  workflow_set(
+    preproc = list(xgboost = xgboost_recipe,
+                   lightgbm = lightgbm_recipe),
+    models = list(XGBOOST = xgboost_spec,
+                  LIGHTGBM = lightgbm_spec)
+  )
+
+
+
+lightgbm_grid <- grid_space_filling(
+  tree_depth(),
+  min_n(),
+  learn_rate(),
+  trees(),
+  size = 10
+)
+
+grid_results <- all_workflows |> 
+  workflow_map(
+    resamples = folds,
+    grid = lightgbm_grid, 
+    control = control_grid(verbose = TRUE, save_pred = TRUE, save_workflow = TRUE,
+                           parallel_over = "everything")
+  )
+
+library(stacks)
+books_stack <-
+  stacks() |> 
+  add_candidates(grid_results)
+
+ens <- blend_predictions(books_stack, penalty = 10^seq(-2, -0.5, length = 20))
+
+autoplot(ens)
+
+ens <- fit_members(ens)
+
+ens_test_pred <- 
+  predict(ens, testing) |> 
+  bind_cols(testing)
+
+ens_test_pred |> 
+  books_metrics(Checkouts, .pred)
+```
+
 
 
 ##ARIMA and ETS fit on the same dataset

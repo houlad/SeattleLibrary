@@ -8,8 +8,6 @@ editor: visual
 editor_options: 
   chunk_output_type: console
 ---
-#What do people read
-#Are they reading less broadly
 
 ```{r package_load, echo=FALSE}
 #| message: false
@@ -27,6 +25,7 @@ library(ggrepel)
 library(ggsci)
 #highlighting specific lines in a plot
 library(gghighlight)
+library(shadowtext)
 #various helper functions
 source("helper_functions.R")
 ```
@@ -150,14 +149,22 @@ wrap_table(publisher_counts |> gt() |> table_format() |> cols_label(n = "Total")
 
 ```
 
-So these tables are a little confusing. Remember we are working with monthly aggregations, so when the publisher table says Random House, Inc. had a total of 1,739,246, what exactly is that? Well, it's just the number of rows where Random House, Inc was the publisher of the checked out book--and each row is a count of the number of checkouts of a specific item for that specific year and month. The same goes for material type and checkout year. The main thing I can see from this is that we potentially have to deal with a lot of NA values and there are a lot of different items that the library lends. Books and ebooks are pretty obvious, but a lot of people don't realize how much music and video content the library lends out.
+So these tables are a little confusing. Remember we are working with monthly aggregations, so when the publisher table says Random House, Inc. had a total of 1,739,246, what exactly is that? Well, it's just the number of rows where Random House, Inc was the publisher of the checked out book--and each row is a count of the number of checkouts of a specific item for that specific year and month. The main thing I can see from this is that we potentially have to deal with a lot of NA values and there are a lot of different items that the library lends. Books and ebooks are pretty obvious, but a lot of people don't realize how much music and video content the library lends out.
 
 ```{r }
 wrap_table(usage_class_counts |>  gt() |>  table_format())+
   wrap_table(total_checkouts |>  gt() |>  fmt_number(decimals = 0))
 ```
 
-We can also get a quick look at the physical vs digital checkouts--physical outnumbers digital almost 3 to 1. And our first look into just how huge the volume of lending for the Seattle library is-- from 2005 to mid 2025, the Seattle public library has lent over 167 million items! That's a whole lot of knowledge shared with the city.
+We can also get a quick look at the physical vs digital checkouts--physical outnumbers digital almost 3 
+to 1. But again, we have to keep in mind that this means, roughly, that there are 3 times more physical
+items represented in the data set--it doesn't necessarily mean that there were 3 times as many
+checkouts of physical items versus digital ones. After all, the checkout counts for each of the physical
+rows could be 1 and the digital rows could be 100! We can get our first look at the actual volume
+of checkoutswith the total_checkouts table. The Seattle library-- from 2005 to mid 2025, lent over 167
+million items--and over 114 million books! With some napkin math and Wikipedia population numbers, that
+works out to something like every person in the city checking out ~10 items per year. That's a whole
+lot of knowledge shared with the city.
 
 # Narrowing our Focus
 
@@ -183,13 +190,17 @@ my_plot_theme <- function(base_family="Karla",
 }
 
 #generic line plot tweaks for most/all line plots this post
-line_plot_tweaks <- function() {
-  list(
-    scale_x_date(minor_breaks = 'year'),
+line_plot_tweaks <- function(x_is_date = FALSE) {
+  alist <- list(
     scale_y_continuous(labels = scales::number_format(big.mark = ',')),
     expand_limits(y = 0), 
     scale_color_aaas()
     )
+  #default is x-axis not being a date
+  if(x_is_date){
+    alist <- c(alist, scale_x_date(minor_breaks = 'year'))
+  }
+  alist
 }
  
  
@@ -230,7 +241,7 @@ total_checkouts_by_month |>
   annotate(geom = 'text', x = as.Date('2023-01-01'), y = 475000,
            label = 'Seattle Library Under \n Ransomware Attack')+
   my_plot_theme()+
-  line_plot_tweaks()
+  line_plot_tweaks(x_is_date = TRUE)
 
 ```
 
@@ -253,11 +264,11 @@ material_type_checkouts_by_month <- monthly_checkouts |>
                               "%Y %m"))
 
 #retrieve the last date to use to attach annotation to
-get_end_labels <- function(df){
+get_end_labels <- function(df, filter_var){
   #takes a summarised df and returns a df filtered to just the last month
   df |> 
     ungroup() |> 
-    filter(year_month == max(year_month))
+    filter({{filter_var}})
 }
 
 
@@ -282,10 +293,10 @@ perc_increase <- material_type_checkouts_by_month |>
 material_type_checkouts_by_month |> 
   ggplot(aes(x = year_month, y = monthly_checkouts, color = material_type))+
   geom_line(linewidth = .6)+
-  geom_label(data = get_end_labels(material_type_checkouts_by_month),
+  geom_label(data = get_end_labels(material_type_checkouts_by_month, year_month == max(year_month)),
             aes(x = year_month, y = monthly_checkouts, label = material_type),
             hjust = -.2, fontface = 'bold', size = 3, family = 'Karla')+
-  line_plot_tweaks()+
+  line_plot_tweaks(x_is_date = TRUE)+
   scale_x_date(limits = c(as.Date('2005-01-01'), as.Date('2027-01-01')),
                minor_breaks = 'year')+
   labs(
@@ -353,7 +364,7 @@ usage_class_monthly <- monthly_checkouts |>
 usage_class_monthly |> 
   ggplot(aes(x = year_month, y = monthly_checkouts, color = usage_class))+
   geom_line(linewidth = .6)+
-  geom_label(data = get_end_labels(usage_class_monthly),
+  geom_label(data = get_end_labels(usage_class_monthly , year_month == max(year_month)),
             aes(x = year_month, y = monthly_checkouts, label = usage_class),
             hjust = -.2, fontface = 'bold', size = 3, family = 'Karla')+
   labs(
@@ -362,7 +373,7 @@ usage_class_monthly |>
     title = "Digital vs Physical Checkouts by Month",
     subtitle = "Digital checkouts are now significantly more common than physical checkouts."
   )+
-  line_plot_tweaks()+
+  line_plot_tweaks(x_is_date = TRUE)+
   scale_x_date(limits = c(as.Date('2005-01-01'), as.Date('2027-01-01')),
                minor_breaks = 'year')+
   my_plot_theme()+
@@ -427,7 +438,7 @@ plot_monthly_change <- function(df1, median_df, adj_fact = 0, use_facet = TRUE,
   #standard formatting to keep post plots consistent
   plot <- plot +
       my_plot_theme()+
-      line_plot_tweaks()+
+      line_plot_tweaks(x_is_date = TRUE)+
       theme(
       legend.position = 'None'
     )+
@@ -547,9 +558,521 @@ checking out more books from the library because they are *buying* fewer books? 
 out more books because it is essentially zero cost to download an ebook or audiobook--if you do not finish it(
 or even start it), it does not matter because you never had to physically go pickup or return something.
 
-So there are a whole host of reasons we cannot use this information to say people are readying *more*,
+So there are a whole host of reasons we cannot use this information to say people are reading *more*,
 but we can say that people are using the *library* more--at least for books. And that is good news in my book.
 
+## What do people read?
 
+A second interesting question to me is--what the heck do people read. Do people read more fiction or nonfiction?
+Are there specific subjects that are very popular? What about authors? Or maybe publishers? Luckily, a lot of 
+these questions look like they can be answered with our dataset. Let's dive in!
+
+### What are the most popular books
+
+I want to begin by looking at what books are most represented in the dataset. I have a working theory that 
+some books are overwhelmingly popular and actually make up a huge percentage of total checkouts--and that 
+that percentage is increasing over time. In other words, fewer books are taking up a greater share of the total
+checkouts. Let's see if we can tease out whether that is true.
+
+First, what *are* the most popular books. For now I am going to bundle physical, ebook, and audiobooks together.
+Right away we have a bit of a problem. Titles are messy! Books, ebooks and audiobooks often have slight
+variations in the title of the same book. Different *versions* of a book might have slightly different titles.
+Different publications might have different titles. As an example, take a look at *The Goldfinch*.
+```{r base_top_25_df}
+total_checkouts_by_title <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"), !if_any(everything(), is.na)) |> 
+  group_by(title) |> 
+  summarise(total = sum(checkouts, na.rm = TRUE)) |> 
+  arrange(desc(total)) |> 
+  collect()
+  
+# I don't want to deal will all million titles. I only want the top ones anyway
+top_1000 <- total_checkouts_by_title |> 
+  slice_head(n = 1000) |> 
+  mutate(title = tolower(title))
+
+top_1000 |> 
+  filter(grepl('the goldfinch.*', title)) |> 
+  gt() |> 
+  table_format(n = 'total')
+```
+That single book has 4 different title variations. Honestly, this is pretty annoying to deal with. My first 
+thought was to do some fuzzymatching to group those titles together. This turned out to be very tricky and 
+finicky and really didn't work that well. Instead, I'm going to use tried and true regex to hack away at the 
+titles and get them semi-grouped. This will *not* be a perfect solution, but it is good enough for my
+purposes here.
+
+```{r tidy_titles}
+tidy_titles <- function(df){
+  df |> 
+    #lowercase titles
+    mutate(title = tolower(title)) |> 
+    # remove unabridged from titles 
+    mutate(title = str_trim(gsub("\\(unabridged\\)", "", title), side = 'both')) |> 
+    # remove / (author) from titles
+    mutate(title = str_trim(gsub("\\/.*", "", title), side = 'both')) |> 
+    # remove : a novel from titltes
+    mutate(title = str_trim(gsub("\\: a novel.*", "", title), side = 'both')) |> 
+    # trim the leading whitespace from :'s
+    mutate(title = gsub(" \\:", ":", title))
+}
+```
+
+After taking the top 1000 most checked out titles from the full monthly dataset, the title cleanup pares 
+that down to 789 titles. Like I said, messy titles! Let us take a look at the top 25 most checked out titles.
+
+```{r bar_plot_functions}
+bar_plot_theme <- function(base_family="Karla", 
+                          base_size =12,
+                          plot_title_family='Karla',
+                          plot_title_size = 20,
+                          grid_col='#dadada') { 
+  aplot <- ggplot2::theme_minimal(base_family=base_family, base_size=base_size) #piggyback on theme_minimal 
+  aplot <- aplot + theme(panel.grid=element_line(color=grid_col))
+  aplot <- aplot + theme(plot.title=element_text(size=plot_title_size, 
+                                                 family=plot_title_family))
+  aplot <- aplot + theme(axis.ticks = element_blank())
+  aplot <- aplot + theme(axis.text.y = element_blank())
+  aplot
+}
+
+make_bar_plot <- function(df, x_var, y_var, .plot_title = NULL, .plot_subtitle = NULL,
+                                .x_nudge = NULL, adjust_y = FALSE,
+                                filter_y_by = NULL, title_size = 20){
+  x_var <- enquo(x_var)
+  y_var <- enquo(y_var)
+  
+  plot <- ggplot(df) +
+    geom_col(aes(x = !!x_var, y = fct_reorder(!!y_var, !!x_var)), fill = "#808180FF")+
+    scale_x_continuous(expand = c(0, 0), labels = scales::label_comma())+
+    labs(
+      x = NULL,
+      y = NULL,
+      title = .plot_title,
+      subtitle = .plot_subtitle
+    )+
+    bar_plot_theme(plot_title_size = title_size)
+  
+    if(adjust_y){
+    plot <- 
+      plot +
+        geom_text(
+          data = df |>  filter(!!x_var > filter_y_by),
+          aes(x = 0, y = !!y_var, label = !!y_var),
+          color = 'white',
+          family = 'Karla',
+          fontface = "bold",
+          size = 3,
+          hjust = 0,
+          nudge_x = .x_nudge)+
+        geom_shadowtext(
+          data = df |>  filter(!!x_var < filter_y_by),
+          aes(x = !!x_var, y = !!y_var, label = !!y_var),
+          color = '#808180FF',
+          family = 'Karla',
+          fontface = "bold",
+          size = 3,
+          bg.color = 'white',
+          hjust = 0,
+          nudge_x = .x_nudge)
+    
+    } else {
+      plot <- 
+        plot + 
+          geom_text(
+            aes(x = 0, y = !!y_var, label = !!y_var),
+            color = 'white',
+            family = 'Karla',
+            fontface = "bold",
+            size = 3,
+            hjust = 0,
+            nudge_x = .x_nudge)
+    }
+      plot
+}
+```
+
+```{r top_25_books}
+cleaned_totals <- tidy_titles(top_1000) |> 
+  group_by(title) |> 
+  summarise(total = sum(total, na.rm = TRUE)) |> 
+  arrange(desc(total)) 
+
+top_25 <- cleaned_totals |> 
+  slice_head(n = 25) |> 
+  mutate(title = str_to_title(title))
+  
+
+make_bar_plot(top_25, x_var = total, y_var = title, .plot_title = 'Top 25 Most Checked Out Books',
+                    .plot_subtitle = 'Seattle Public Library System: April 2005 - July 2025',
+                    .x_nudge = 500)
+```
+
+This is about what I expected. There is a good mix of fiction and nonfiction and there are a lot of books
+I recognize from lists like the NYT bestsellers. Just out of curiousity, how does this compare to a plot
+of the most checked out book from each year in our dataset?
+
+```{r top_checkout_each_year}
+top_by_year <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"), !if_any(everything(), is.na)) |> 
+  group_by(title, checkout_year) |> 
+  summarise(total = sum(checkouts, na.rm = TRUE)) |> 
+  arrange(desc(total)) |> 
+  collect()
+
+# performing the regex title cleaning on 6m rows takes longer than I like. I can get the same results
+# by taking the top chunk of each each and doing the analysis with just those books.
+# this is substantial time savings
+top_by_year_slice <- top_by_year |> 
+  ungroup() |> 
+  group_by(checkout_year) |> 
+  arrange(desc(total)) |> 
+  slice_head(n = 50000) |>
+  #clean up titles so I can group variations on the same title together
+  tidy_titles() |> 
+  group_by(title, checkout_year) |> 
+  summarise(total = sum(total, na.rm = TRUE)) |> 
+  arrange(desc(total))
+
+#get the top checkout for each year
+top_book_each_year <- top_by_year_slice |> 
+  ungroup() |> 
+  group_by(checkout_year) |> 
+  slice_head(n = 1) |> 
+  ungroup() |> 
+  mutate(old_title = str_to_title(title),
+         title = paste0(old_title, "-", as.character(checkout_year))) |> 
+  select(-checkout_year)
+
+
+# since bar size varies so much, need to toggle adjust_title
+make_bar_plot(top_book_each_year, x_var = total, y_var = title, .plot_title = 'What is the most checked out book for each year?',
+                    .plot_subtitle = 'Fleeting Popularity: Only 8 books from this plot make the top 25 all time.', 
+                    .x_nudge = 150, adjust_y = TRUE, filter_y_by = 5000)
+```
+
+So only 8 of the most popular books of a specific year make the all time top 25 list. In other words,
+you need sustained popularity over many years to make that list. That does point towards book popularity 
+being a very ephemeral thing--books get very popular for whatever reason and then most of them fall off
+very quickly. We will look a bit later at whether that phenomenon is becoming stronger recently.
+
+### Are people Fiction or Non-Fiction readers?
+
+I think a good place to start when looking at what type of stuff people read is just--do people read
+fiction or nonfiction books? Personally, I split about 50/50, but I know plenty of people who read 
+only one or the other. Let us look at checkouts of the two and see how it breaks down.
+```{r fiction_v_nonfiction}
+# this is 100m+ row df. be careful with it
+subject_df <- monthly_checkouts |>  
+  #must remove ISBN column before using build_base_dataset or you'll filter out most of dataset since
+  #it have ISBN = NA
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  build_base_dataset(condition = c(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"),
+                                 !if_any(everything(), is.na)),
+                     variable = c(-usage_class, -checkout_type, 
+                                -creator, -publisher, -publication_year)) |> 
+  mutate(subjects = tolower(subjects)) |> 
+  separate_longer_delim(subjects, delim = ', ')
+
+
+fiction_and_nonfiction <- subject_df |> 
+  filter(subjects %in% c("fiction", "nonfiction")) |> 
+  group_by(checkout_year, subjects) |> 
+  summarise(counts = sum(checkouts)) |> 
+  arrange(desc(counts))
+
+fiction_and_nonfiction |> 
+  ggplot(aes(x = checkout_year, y = counts, color = subjects))+
+  geom_line()+
+  geom_label(data = get_end_labels(fiction_and_nonfiction, checkout_year == max(checkout_year) - 2),
+            aes(x = checkout_year, y = counts, label = subjects),
+            hjust = -.2, fontface = 'bold', size = 3, family = 'Karla')+
+  geom_vline(xintercept = 2011, linetype = 'dashed', color = 'black')+
+  my_plot_theme()+
+  line_plot_tweaks(x_is_date = FALSE)+
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Yearly Checkouts of Fiction and NonFiction Books",
+    subtitle = 'Ebook adoption coincides with a widening of the Fiction v NonFiction Gap'
+  )+
+  theme(
+    legend.position = 'None'
+  )+
+  scale_x_continuous(breaks = seq(2005, 2025, by = 2))
+```
+
+Broadly, people(at least Seattl-ites?) seem to read a little bit more fiction than nonfiction. But there is 
+an interesting gap that opens up starting around 2011. That is when ebooks started to become popular. Maybe if we break this down a little more we can see what is happenening more clearly.
+
+```{r fiction_v_nonfiction_by_material_type}
+#get typed dataframe
+fiction_and_nonfiction_by_material_type <- subject_df |> 
+  filter(subjects %in% c("fiction", "nonfiction")) |> 
+  group_by(checkout_year, material_type, subjects) |> 
+  summarise(counts = sum(checkouts)) |> 
+  arrange(desc(counts))
+
+fiction_and_nonfiction_by_material_type |> 
+  ggplot(aes(x = checkout_year, y = counts, color = subjects))+
+  geom_line()+
+  facet_wrap(~material_type, scales = 'free_y')+
+  geom_label(data = get_end_labels(fiction_and_nonfiction_by_material_type |> 
+                                     group_by(material_type),
+                                   checkout_year == max(checkout_year) - 5),
+            aes(x = checkout_year, y = counts, label = subjects),
+            hjust = -.2, fontface = 'bold', size = 3, family = 'Karla', nudge_y = 1000)+
+  my_plot_theme()+
+  line_plot_tweaks(x_is_date = FALSE)+
+  labs(
+    x = NULL,
+    y = NULL,
+    title = "Yearly Checkouts of Fiction and NonFiction Books",
+    subtitle = 'Subject Labeling is Heavily Dependent on Book Type(ie Physical/Ebook/Audiobook)'
+  )+
+  theme(
+    legend.position = 'None'
+  )+
+  scale_x_continuous(breaks = seq(2005, 2025, by = 5))
+```
+Well, that is interesting. Almost no physical books are tagged as nonfiction and very few are even tagged
+as fiction. What is going on there? As far as I can tell, this is kind of a result of Dewey Decimal 
+system. Physical books have been classified by the [hierarchical Dewey system](https://en.wikipedia.org/wiki/List_of_Dewey_Decimal_classes#) for ~150 years. 
+Noteably, the system does not have categories like nonfiction. Instead, you have classes, divisions and sections. So science is a class; that's broken down into divisions- science, mathematics, astronomy, physics, etc; and that's divided into sections-algebra, arithmetic, topology, etc. So the result is that physical books are classified by the Dewey system, and ebooks/audiobooks are classified by some other system. We can see this by pulling out a random book as an example.
+
+```{r book_classification_example}
+class_example <- subject_df |> 
+  filter(checkout_year == 2024) |> 
+  mutate(title = tolower(title)) |> 
+  filter(grepl('capital in the twenty', title)) |> 
+  group_by(material_type) |> 
+  count(subjects) 
+
+class_example |> 
+  ungroup() |> 
+  select(-n) |> 
+  gt() |> 
+  tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+                  )
+      ),
+      locations = cells_column_labels(everything())
+    )
+```
+
+So I pulled out *Capital in the Twenty-First Century*. Physical books list the subjects as captial,
+income distribution, labor economics and wealth, but ebooks label it as business and nonfiction. That is
+*very* different and every book in the dataset is like this. This certainly muddiest the picture of what fiction 
+versus nonfiction acutally means in the dataset. Maybe if we look at the top subjects within each book type we can
+make more sense of things.
+
+### What subjects do people read about?
+
+```{r top_subjects_by_book_type}
+book_type_subjects <- subject_df |> 
+  group_by(material_type, subjects) |> 
+  summarise(counts = sum(checkouts)) |> 
+  arrange(desc(counts))
+
+books <- make_bar_plot(book_type_subjects |> 
+                filter(material_type == 'BOOK') |> 
+                slice_head(n = 15) |> 
+                ungroup() |> 
+                  mutate(subjects = str_to_title(subjects)), 
+              x_var = counts, y_var = subjects, .x_nudge = 20000, .plot_subtitle = 'Books',
+              .plot_title = 'What are the most read subjects?', title_size = 14)
+
+ebooks <- make_bar_plot(book_type_subjects |> 
+                filter(material_type == 'EBOOK') |> 
+                slice_head(n = 15) |> 
+                ungroup() |> 
+                  mutate(subjects = str_to_title(subjects)), 
+              x_var = counts, y_var = subjects, .x_nudge = 100000, adjust_y = TRUE,
+              filter_y_by = 2500000, .plot_subtitle = 'Ebooks'
+              )
+
+audiobooks <- make_bar_plot(book_type_subjects |> 
+                filter(material_type == 'AUDIOBOOK') |> 
+                slice_head(n = 15) |> 
+                ungroup() |> 
+                  mutate(subjects = str_to_title(subjects)), 
+              x_var = counts, y_var = subjects, .x_nudge = 50000, adjust_y = TRUE,
+              filter_y_by = 1250000, .plot_subtitle = 'Audiobooks')
+
+books /ebooks / audiobooks
+```
+
+The subject lists look very different at first glance, but are they really? With books, people read
+mystery fiction, fantasy fiction, historical fiction, suspense fiction. That's all present in 
+ebooks and audiobooks, but it's just fantasy or suspense. The big, tentpole sort of categories 
+are broadly the same across medium type. I think the main difference is that physical book subject categories
+are *much* more specific. Take a look at the table below.
+
+```{r number_of_subjects_table}
+total_subjects <- subject_df |> 
+  distinct(material_type, subjects) |> 
+  group_by(material_type) |> 
+  summarise(total = n())
+  
+
+  
+book_sub_sample <- subject_df |> 
+  distinct(material_type, subjects) |> 
+  filter(material_type == 'BOOK') |> 
+  slice_head(n = 10)
+
+wrap_table(total_subjects |> gt() |> table_format(n = 'total')) /
+  wrap_table(book_sub_sample |>  gt() |>  tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+                  )
+      ),
+      locations = cells_column_labels(everything())
+    ))
+```
+
+That's not a mistake--physical books have over 400,000 different subject classifications!
+You can glimpse the specificity in the slice of book subjects, but it really is incredible the level
+of detail the subject categorization goes into. Ebooks and audiobooks are not remotely at the same
+level of detail. Ultimately though, I'm not sure this matters. The 'popular' subjects are more or less the same
+across the mediums, with perhaps one niche exception. Physical books still seem to be very popular for books with 
+pictures. Graphic novels, comics, picture books, nursery rhymes all appear near the top of the most checked
+out subjects for physical books. I think this makes sense. Of course it's nicer to read a comic with a nice
+physical copy than with an e-ink display. How long this holds true as e-ink and tablets improve and become
+cheaper is anyones guess.
+
+This subject comparison does reinforce our earlier conclusion about the fiction/nonfiction split. It may
+be true that that descriptor is muddled when it comes to physical books, but the data is pretty clear with
+ebooks and audiobooks--people read roughly twice as much fiction as nonfiction.
+
+### Who are the most popular authors?
+
+One last stop on the 'what people read' tour is a brief look at the most popular authors. I have a feeling this 
+will be a lot of industry standards. Think Stephen King, James Patterson or Jodi Piccoult. 
+```{r popular_authors}
+author_totals <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  build_base_dataset(condition = c(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"),
+                                 !if_any(everything(), is.na)),
+                     variable = c(-usage_class, -checkout_type, 
+                                 -publisher, -publication_year)) |> 
+  group_by(creator) |> 
+  summarise(total = sum(checkouts)) |> 
+  #names suffer from multiple variations; clean them up to group them together
+  mutate(first = str_split_i(creator, ", ", 2),
+         last = str_split_i(creator, ", ", 1)) |>
+  mutate(new_name = if_else(is.na(first), last, paste0(first, " ", last))) |> 
+  ungroup() |> 
+  group_by(new_name) |> 
+  summarise(total = sum(total))
+
+make_bar_plot(author_totals |> arrange(desc(total)) |> 
+                slice_head(n = 25), x_var = total, y_var = new_name,
+              .x_nudge = 2000,
+              .plot_title = 'Most Checked Out Authors',
+              .plot_subtitle = 'Top authors are split roughly 50/50 between childrens authors and adult authors')
+
+```
+
+
+I was partial right!. The list is roughly an even split between authors of kids books and authors of popular
+adult books. While I'd love to see more variety or 'more serious' literature names on there, I try not to 
+book shame anyone. If you are reading, you are heading in the right direction in my book.
+
+## Are people reading less broadly?
+
+This question is a little trickier to unpack. What exactly do I even mean? I am interested in whether there
+has been a shift over the years in terms of how widely people read. I think one way to answer this question is to
+look at the 'share' of a book or books. For example, does it take 100 different books to add up to 50% of all 
+book checkouts? Or does it take 1000 different books to get to 50%? If it is 1000 books, then people are reading 
+more broadly than if it takes 100. In the extreme, if there was only one book, that book would be 100% of total
+checkouts, and people wouldn't be reading a wide swath of books at all. I am interested in how much, or if,
+this book share has changed throughout the lifespan of the dataset. Let's munge some data and see.
+
+```{r proportion_of_checkouts_plot}
+proportion_of_total_checkouts <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  filter_by_condition(checkout_year != 2005, checkout_year != 2006, checkout_year != 2025) |> 
+  build_base_dataset(condition = c(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"),
+                                 !if_any(everything(), is.na)),
+                     variable = c(-usage_class, -checkout_type, -creator,
+                                 -publisher, -publication_year)) |> 
+  tidy_titles() |> 
+  group_by(checkout_year, title) |> 
+  #calculate checkout counts for each title for each year
+  summarise(checkouts = sum(checkouts)) |> 
+  # only grouped by year now; calculate proportion of total checkouts for year for each title
+  mutate(prop_checkouts = checkouts/sum(checkouts)) |> 
+  arrange(desc(checkouts))
+  
+
+cumulative_proportion_of_total_checkouts <- proportion_of_total_checkouts |> 
+  # ordered from most to fewest checkouts, calculate running perc of total checkouts for year
+  mutate(perc_of_total = cumsum(prop_checkouts)/sum(prop_checkouts)) |> 
+  mutate(row_num = row_number(),
+         checkout_year = as.factor(checkout_year))
+
+all_books <- cumulative_proportion_of_total_checkouts |> 
+  ggplot(aes(x = row_num, y = perc_of_total, color = checkout_year))+
+  geom_line(linewidth = .8)+
+  geom_hline(yintercept = .75, linetype = 'dashed', color = 'gray8')+
+  scale_x_continuous(labels = scales::label_comma())+
+  scale_y_continuous(labels = scales::label_percent())+
+  paletteer::scale_color_paletteer_d("cartography::turquoise.pal", dynamic = TRUE)+
+  # paletteer::scale_color_paletteer_d("dichromat::BluetoDarkOrange_18")+
+  my_plot_theme()+
+  labs(
+    x = "# of Books",
+    y = "Proportion of Total Checkouts",
+    title = 'Are people reading a smaller and smaller subset of books?',
+    subtitle = 'It took ~2x as many books to sum to 75% of total checkouts\n in 2024 versus 2007'
+  )+
+  theme(
+    legend.position = 'inside',
+    legend.title = element_blank(),
+    legend.position.inside = c(.94, .35),
+    legend.key.width = unit(10, 'mm')
+  )+
+  guides(linetype = guide_legend(override.aes = list(size = 2)))
+
+top_100 <- cumulative_proportion_of_total_checkouts |> 
+  filter(row_num < 100) |> 
+  ggplot(aes(x = row_num, y = perc_of_total, color = checkout_year))+
+  geom_line(linewidth = .8)+
+  # geom_hline(yintercept = .25, linetype = 'dashed', color = 'gray8')+
+  scale_x_continuous(labels = scales::label_comma())+
+  scale_y_continuous(labels = scales::label_percent())+
+  paletteer::scale_color_paletteer_d("cartography::turquoise.pal", dynamic = TRUE)+
+  # paletteer::scale_color_paletteer_d("dichromat::BluetoDarkOrange_18")+
+  my_plot_theme()+
+  labs(
+    x = "# of Books",
+    y = NULL,
+    subtitle = 'However, the top 100 most checked out books make up \n ~2x greater share of total checkouts: 3% -> 6%'
+  )+
+  theme(
+    legend.position = 'None'
+  )
+
+all_books + top_100
+```
+
+This is a really interesting plot, though it might be slightly confusing at first. On the left, we took 
+all books and looked at what share of total checkouts they made up. So if there were 1000 total checkouts
+and book A was checked out 150 times, it's share of total checkouts would be 15%. If we had a second book,
+book B, that was checked out 100 times, that books share is 10%. After doing that for every book, if you order
+the books by checkout share, you can cumulatively sum them up and see the share of the total that X number 
+of books represents. So book A and book B make up 25% of the total checkouts of all books. The plot on the left
+is just doing that with all the books in the dataset, but doing it by year. If we 
 
 
