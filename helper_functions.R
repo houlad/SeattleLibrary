@@ -32,6 +32,35 @@ add_age_group <- function(df){
     )
 }
 
+# format the numbers displayed in a table
+format_table_numbers <- function(table, is_percent = FALSE, n = 'Total'){
+  if(is_percent){
+    table |> 
+      fmt_percent(
+        columns = c(n)
+      )
+  }else {
+    table |>
+      fmt_number(
+        columns = c(n),
+        decimals = 0
+      ) 
+  }
+  
+}
+# format the header of a table
+format_table_header <- function(table) {
+  table |>  
+    tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+        )
+      ),
+      locations = cells_column_labels(everything())
+    )
+}
+
 add_category_subgroup <- function(df, df2){
   #takes the Collection of the df and uses value to join with the type_data to get
   #a category subgroup
@@ -48,6 +77,15 @@ get_year_and_add_age_group <- function(df, condition){
     add_age_group()
 }
 
+
+#' Title
+#'
+#' @param df 
+#'
+#' @returns
+#' @export
+#'
+#' @examples
 zero_bound_predictions <- function(df){
   stopifnot(is.data.frame(df))
   df |> 
@@ -94,7 +132,7 @@ select_top_n_books <- function(df, .n){
 
 #
 calculate_lags <- function(.df, .value, .group_var, .n) {
-  
+
   grouped_data <- .df |> 
     group_by(across(all_of(.group_var)))
   
@@ -110,6 +148,7 @@ calculate_lags <- function(.df, .value, .group_var, .n) {
 }
 
 calculate_rolling_averages <- function(.df, .value, .group_var, .n){
+  
   #group the data frame
   grouped_data <- .df |> 
     group_by(across(all_of(.group_var)))
@@ -128,12 +167,32 @@ calculate_rolling_averages <- function(.df, .value, .group_var, .n){
 
 
 #Function to add features to dataset
+#' Title
+#'
+#' @param df 
+#' @param add_lagged_vars 
+#' @param add_rolling_avg_vars 
+#' @param .n_lags 
+#' @param .n_avgs 
+#' @param g_vars 
+#'
+#' @returns
+#' @export
+#'
+#' @examples
 add_features <- function(df, add_lagged_vars = TRUE, 
                          add_rolling_avg_vars = TRUE,
                          .n_lags = NULL,
-                         .n_avgs = NULL){
+                         .n_avgs = NULL, 
+                         g_vars = NULL){
   
-  #
+  
+  # this works when you provide a single unquoted grouping variable, but not with multiple
+  # can't figure out how to make it work, so just using quoted variables for now
+  # g_vars <- enquos(g_vars) |>
+  #   map(~rlang::quo_get_expr(.x)) |> 
+  #   list_c()
+  
   temp_df <- df |> 
     mutate(across(where(is.character), factor)) |> 
     mutate(year_month = tsibble::make_yearmonth(year = checkout_year, month = checkout_month),
@@ -147,12 +206,12 @@ add_features <- function(df, add_lagged_vars = TRUE,
   
   if(add_lagged_vars)
     temp_df <- calculate_lags(temp_df, .value = checkouts,
-                               .group_var = c('title', 'publisher', 'publication_year'),
+                               .group_var = g_vars,
                                .n = .n_lags)
   
   if(add_rolling_avg_vars)
     temp_df <- calculate_rolling_averages(temp_df, .value = checkouts,
-                                          .group_var = c('title', 'publisher', 'publication_year'),
+                                          .group_var = g_vars,
                                           .n = .n_avgs)
   temp_df |> 
     ungroup() |> 

@@ -7,60 +7,57 @@ format:
 editor: visual
 editor_options: 
   chunk_output_type: console
+categories:
+  - R
+  - data visualization
+  - machine learning
+  - xgboost
+  - duckdb
 ---
 
 ```{r package_load, echo=FALSE}
 #| message: false
 #| warning: false
+
 library(tidyverse)
 library(duckdb)
 library(duckplyr)
-#nice tables
+# nice tables
 library(gt)
-#composable plots
+# composable plots
 library(patchwork)
-#text annotation on line graphs
+# text annotation on line graphs
 library(ggrepel)
-#nice color palettes
+# nice color palettes
 library(ggsci)
-#highlighting specific lines in a plot
+# highlighting specific lines in a plot
 library(gghighlight)
 library(shadowtext)
-#various helper functions
+# model deployment
+library(vetiver)
+library(plumber)
+library(pins)
+# various helper functions
 source("helper_functions.R")
 ```
 
-One of my favorite public goods has always been the library. Going all the way back to elementary school and the glorious pan-pizza summer reading challenges, there was always something magical about being able to go to this place and have the world of books at your fingertips. And these endless stacks of books weren't just at your fingertips, they were *free*. All that was asked was that you brought them back after you were done--so that someone else could enjoy them! Needless to say, I've had a soft spot for libraries for almost my entire life.
+One of my favorite public goods has always been the library. Going all the way back to elementary school and the glorious pan-pizza summer reading challenges, I always found it magical you could go to this place and have the world of books at your fingertips. And those endless stacks of books weren't just at your fingertips, they were *free*! All that was asked was that you brought them back after you were done, so that someone else could enjoy them! Needless to say, I have had a soft spot for libraries most of my life.
 
-After discovering that I was a data nerd, one of the first things I thought about looking into was library data. At that time though, I couldn't find any good library data sources, so the idea went on the back shelf where it has been gathering dust ever since. Well friends, no longer! A couple months ago I discovered that the Seattle Public Library has a portal where you can access checkout data both at a [monthly aggregation](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) and a [log of all the physical item checkouts](https://data.seattle.gov/Community-and-Culture/Checkouts-By-Title-Physical-Items-/5src-czff/about_data) going back all the way to 2005.
+After discovering that I was a data nerd, one of the first things I thought about looking into was library data. Imagine the things you could learn! At that time though, I couldn't find any good library data sources, so the idea went on the back shelf where it has been gathering dust ever since. Well friends, no longer! A couple months ago I discovered that the Seattle Public Library has a portal where you can access checkout data. There is a [monthly aggregation](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) dataset, a [dataset of all the physical item checkouts](https://data.seattle.gov/Community-and-Culture/Checkouts-By-Title-Physical-Items-/5src-czff/about_data) and even a [library inventory](https://data.seattle.gov/Community-and-Culture/Library-Collection-Inventory/6vkj-f5xf/about_data) dataset. And they go back all the way to 2005!
 
-At \~50m and \~120m rows, these datasets are huge and there are a whole host of interesting avenues to traverse and questions to answer. Having already looked into these datasets, I know I'm going to focus on the monthly aggregation data, but I want access to a daily timestamp for things like viewing checkouts by hour or day so I'm going to keep it around. For now, I want to do a fun little EDA and then I'm going to build a model to predict the number of monthly checkouts of a book. Let's go ahead and dive in!
+At \~50m, \~120m and \~144m rows, these datasets are huge and there are a whole host of interesting avenues to traverse and questions to ask and answer. Having already peeked at the datasets, I know I'm going to focus on the monthly aggregation data, but I think there are some really interesting opportunities with the others, especially the inventory dataset. For now, I want to do a fun little EDA and then I'm going to build a model to predict the number of monthly checkouts of a book. Let's go ahead and dive in!
 
 # What the heck does this data set look like?
 
-First things first, I want to get a sense of what is in the dataset. Since these are huge csv files, I'm going to use duckdb to work with them a little more quickly, but I'll still need to be pretty careful with the sorts of queries I'm doing if I don't want to wait all day. Duckdb makes this all pretty easy and we just make a local duckdb instance and import the csv files into their respective databases. I can't use the defaults with duckdb_read_csv because there are some weird values in columns like ID that confuse the parser, but specifying the variable types manually takes care of that issue.
+First things first, I want to get a sense of what is in the dataset. Since this is a huge csv file, I'm going to use duckdb to ease the exploration, but I'll still need to be pretty careful with the sorts of queries I'm doing if I don't want to wait all day.[^accidentally-on-purpose] Duckdb makes this all pretty easy and I just make a local duckdb instance and import the csv file into a local database. I can't use the defaults with duckdb_read_csv because there are some weird values in ID that confuse the parser, but specifying the variable types manually takes care of that issue.
 
-```{r data_import, echo = TRUE, eval = TRUE}
+[^accidentally-on-purpose]: It is surprisingly easy to, *cough*, accidentally generate a tibble with 300+ million rows.
+
+```{r data_import, echo = TRUE, eval = FALSE}
 #Connect to local duckdb
 con <- dbConnect(duckdb(), dbdir = "duckdb_monthly", read_only = FALSE)
-con2 <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
-
-#initial reading of the csv file. Have to manually specify types because ID
-#randomly(?) has a couple values with characters in it
-# duckdb_read_csv(con, "checkouts", "/Users/athou/Downloads/Checkouts_By_Title__Physical_Items__20250312.csv",
-#                 col.types = c(
-#                   ID = "VARCHAR", # some id's have characters in them for some reason
-#                   CheckoutYear = "BIGINT",
-#                   BibNumber = "BIGINT",
-#                   ItemBarcode = "VARCHAR",
-#                   ItemType = "VARCHAR",
-#                   Collection = "VARCHAR",
-#                   CallNumber = "VARCHAR",
-#                   ItemTitle = "VARCHAR",
-#                   Subjects = "VARCHAR",
-#                   CheckoutDateTime = "DATETIME"
-#                 ))
-# 
+# initial reading of the csv file. Have to manually specify types because ID
+# randomly(?) has a couple values with characters in it
 # duckdb_read_csv(con, "checkouts_monthly", "/Users/athou/Downloads/Checkouts_by_Title_20250813.csv",
 #                 col.types = c(
 #                   UsageClass = "VARCHAR",
@@ -78,25 +75,33 @@ con2 <- dbConnect(duckdb(), dbdir = "duckdb", read_only = FALSE)
 #                 ))
 
 #connect to the database instances and create a table to work with
-daily_checkouts <- tbl(con2, 'checkouts')
 monthly_checkouts <- tbl(con, 'checkouts_monthly')
+
+# access to my pins of data and models
+board <- board_folder('data/final', versioned = TRUE)
 ```
 
-With this connection made, we can easily get a quick glimpse at the variables in our datasets. Taking a look at the [data](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) dictionary and the first couple rows of the dataset, we see that we have everything from usageclass--ie whether an item is a physical book or a digital one to the materialtype of the item, the subjects, etc.
+## Variable Exploration
 
-```{r dataset_variables}
+With a connection established, I can take a look at the variables in the dataset. Using the [data](https://data.seattle.gov/Community-and-Culture/Checkouts-by-Title/tmmm-ytt6/about_data) dictionary and a list of variables, I see that that data set has everything from usage class--ie whether an item is a physical book or a digital one-- to the material type of the item, the subjects, etc.
+
+```{r dataset_variables, eval = FALSE}
 example_data <- monthly_checkouts |> 
   head(100) |> 
   collect()
 
-example_data |> 
-  head(2) |> 
-  gt()
+variables <- tibble(variables = names(example_data)) |> 
+  gt() |> 
+  format_table_header()
+
+gtsave(variables, 'variables_table.png')
 ```
+
+![](variables_table.png){#tbl-one}
 
 One thing I like to do first is to get a bunch of counts of important sounding variables to get some sense of the scope and variation of certain variables. Since I'm doing this several times, I'll wrap it in a quick little function.
 
-```{r exploratory_counts}
+```{r exploratory_counts, eval = FALSE}
 quick_counts <- function(.data, count_var){
   #.data should be a tbl db connection
   .data |> 
@@ -117,63 +122,64 @@ total_checkouts <- monthly_checkouts |>
   collect()
 
 
-#quick little table formatter function
-table_format <- function(table, is_percent = FALSE, n = 'Total'){
-  tab <- table |>  
-    tab_style(
-      style = list(
-        cell_text(weight = 'bold',
-                  transform = 'capitalize'
-                  )
-      ),
-      locations = cells_column_labels(everything())
-    )
-  if(is_percent){
-    tab |> 
-      fmt_percent(
-        columns = c(n)
-      )
-  }else {
-    tab |>
-      fmt_number(
-        columns = c(n),
-        decimals = 0
-    ) 
-  }
+counts_1 <- wrap_table(publisher_counts |> 
+             gt() |> 
+             format_table_header() |> 
+             format_table_numbers() |> 
+             cols_label(n = "Total")) + 
+  wrap_table(material_type_counts |>
+               gt() |>
+               format_table_header() |> 
+               format_table_numbers()|> 
+              cols_label(n = "Total")) + 
+  wrap_table(checkout_year_counts |>
+               gt() |> 
+               data_color(
+                 columns = c(checkout_year, n),
+                 rows = n < 1700000, 
+                 palette = 'yellow'
+               ) |> 
+               format_table_header() |> 
+               format_table_numbers()|> 
+              cols_label(n = "Total")) 
 
-}
-
-wrap_table(publisher_counts |> gt() |> table_format() |> cols_label(n = "Total")) + 
-  wrap_table(material_type_counts |> gt() |>  table_format()) + 
-  wrap_table(checkout_year_counts |>  gt() |>  table_format())
+#ggsave('counts_plot.png', counts_1)
 
 ```
 
-So these tables are a little confusing. Remember we are working with monthly aggregations, so when the publisher table says Random House, Inc. had a total of 1,739,246, what exactly is that? Well, it's just the number of rows where Random House, Inc was the publisher of the checked out book--and each row is a count of the number of checkouts of a specific item for that specific year and month. The main thing I can see from this is that we potentially have to deal with a lot of NA values and there are a lot of different items that the library lends. Books and ebooks are pretty obvious, but a lot of people don't realize how much music and video content the library lends out.
 
-```{r }
-wrap_table(usage_class_counts |>  gt() |>  table_format())+
-  wrap_table(total_checkouts |>  gt() |>  fmt_number(decimals = 0))
+![Publisher, Material and Total Checkout Counts](counts_plot.png){#tbl-two width=100%}
+
+
+These tables are a little confusing. Remember, I am working with monthly aggregations, so when the publisher table says Random House, Inc. had a total of 1,739,246, what exactly does that mean? That is the number of rows where Random House, Inc was the publisher of the checked out book--and each row is a count of the number of checkouts of a specific item for that specific year and month. The main thing I see from this is that there are a lot of potential NA values and there are a lot of different items that the library lends. Books and ebooks are pretty obvious, but a lot of people don't realize how much music and video content the library lends out. This table also highlights that 2025 and 2005 are especially low on checkouts totals. Why? Well, they are incomplete years. The dataset starts in April 2005 and ends in July of 2025. This is just something to keep in mind during analysis.
+
+I also get a quick sense of the amount of physical vs digital checkouts--physical outnumbers digital almost 3 to 1. Remember, this means that there are 3 times more physical items represented in the data set--it doesn't necessarily mean that there were 3 times as many checkouts of physical items versus digital ones. After all, the checkout counts for each of the physical rows could be 1 and the digital rows could be 100! Looking at the volume of checkouts with the total_checkouts table, the Seattle library system, from April 2005 to July 2025, lent over 167 million items and over 114 million books! With some napkin math and Wikipedia population numbers, that works out to something like every person in the city checking out \~10 items per year. That's a whole lot of knowledge shared with the city.
+
+```{r item-counts, eval = FALSE}
+counts_2 <- wrap_table(usage_class_counts |> 
+             gt() |>  
+             format_table_header() |> 
+             format_table_numbers() |> 
+             cols_label(n = 'Total'))+
+  wrap_table(total_checkouts |> 
+               gt() |>  
+               format_table_header() |> 
+               fmt_number(decimals = 0))
+
+#ggsave('item_counts_plot.png', counts_2, height = 2, width = 5)
 ```
 
-We can also get a quick look at the physical vs digital checkouts--physical outnumbers digital almost 3 
-to 1. But again, we have to keep in mind that this means, roughly, that there are 3 times more physical
-items represented in the data set--it doesn't necessarily mean that there were 3 times as many
-checkouts of physical items versus digital ones. After all, the checkout counts for each of the physical
-rows could be 1 and the digital rows could be 100! We can get our first look at the actual volume
-of checkoutswith the total_checkouts table. The Seattle library-- from 2005 to mid 2025, lent over 167
-million items--and over 114 million books! With some napkin math and Wikipedia population numbers, that
-works out to something like every person in the city checking out ~10 items per year. That's a whole
-lot of knowledge shared with the city.
+![Item Counts](item_counts_plot.png){#tbl-three}
 
-# Narrowing our Focus
 
-Since this dataset is so broad and deep, I'm going to immediately focus on just books. I'm sure there are equally interesting lines of discovery in movies, music, etc, but I have to draw the line somewhere! I'm going to try to
-answer three, somewhat broad, questions in this exploratory analysis. 
 
-1. How much are people reading?
-2. What are people reading?
-3. Are people reading a narrower subset of books than they used to?
+# What Are We Interested in Exploring in This Dataset?
+
+Since this dataset is so broad and deep, I'm going to immediately make the executive decision to focus on just books. There are surely equally interesting lines of discovery in movies, music, etc, but I have to draw the line somewhere! I want to answer three, somewhat broad, questions in this exploratory analysis.
+
+1.  How much are people reading?
+2.  What are people reading?
+3.  Are people reading a narrower subset of books than they used to?
 
 ```{r my_plot_theme}
 my_plot_theme <- function(base_family="Karla", 
@@ -206,30 +212,38 @@ line_plot_tweaks <- function(x_is_date = FALSE) {
  
 ```
 
-## How much are people reading these days?
+## How Much are People Reading These Days?
 
-I think a decent approach to the 'how much' question is to base it on total checkouts per month. Luckily,
-the dataset provides almost exactly that.
+A decent first stab at the 'how much' question is to base it on total checkouts per month. If the library is lending out 100,000 books a month, I'm going to assume that means people are *reading* 100,000 books a month. That might not be true, but I'll make that assumption. Since the data set gives us the data in almost exactly this format, I can pretty much dive right in.
 
-### Total checkouts per month
-```{r total_book_checkouts_per_month}
-total_checkouts_by_month <- monthly_checkouts |> 
-  janitor::clean_names() |> 
-  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
-  group_by(checkout_year, checkout_month) |> 
-  summarise(monthly_checkouts = sum(checkouts, na.rm = TRUE)) |> 
-  collect() |> 
-  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
-                              "%Y %m"))
+### Total Checkouts Per Month
 
-total_checkouts_by_month |> 
+I want to start by looking at total monthly checkouts over time.
+```{r total_book_checkouts_per_month, eval = FALSE}
+# total_checkouts_by_month <- monthly_checkouts |> 
+#   janitor::clean_names() |> 
+#   filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
+#   group_by(checkout_year, checkout_month) |> 
+#   summarise(monthly_checkouts = sum(checkouts, na.rm = TRUE)) |> 
+#   collect() |> 
+#   mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
+#                               "%Y %m"))
+
+# save this data for use in blog post to avoid having to use database connection
+# board |> pin_write(name = 'plot_data', x = total_checkouts_by_month, versioned = TRUE)
+
+# load saved data
+total_checkouts_by_month <- board |> 
+  pin_read('plot_data', version = '20250926T182301Z-c7f05')
+
+p <- total_checkouts_by_month |> 
   ggplot(aes(x = year_month, y = monthly_checkouts))+
   geom_line(linewidth = .6)+
   geom_smooth(method = 'lm', se = FALSE, color = '#008B45FF', linewidth = .5)+
   labs(
     x = NULL,
     y = NULL,
-    title = 'Number of Books Checked Out Per Month',
+    title = 'How Many Books are Checked Out Each Month?',
     subtitle = 'Includes Physical Books, Ebooks and Audiobooks'
   )+
   annotate(geom = 'point', x = as.Date('2020-03-23'), y = 360000, size = 8, shape = 21,
@@ -243,25 +257,31 @@ total_checkouts_by_month |>
   my_plot_theme()+
   line_plot_tweaks(x_is_date = TRUE)
 
+
+#ggsave('total_book_checkouts_plot.png', plot = p, bg = 'white')
 ```
+![Total Monthly Book Checkouts](total_book_checkouts_plot.png){#fig-one width=100%}
 
-Somewhat surprisingly, at least to me, there is a pretty strong upward trend. I would have guessed that fewer people were renting books from the library, but alas, I was wrong. There are two interesting points that jump out immediately though. One is the now familiar COVID 'dip' and the other was a bit mysterious to me--someone decidedly *not* from the west coast. After a little googling, it turns out Seattle's library system suffered a [ransomware attack](https://www.libraryjournal.com/story/seattle-public-library-recovering-from-ransomware-attack) in May 2024. It is hard to pin down exactly what services went down and when they came back up, but the dataset is missing data from May and June of 2024, and it appears either July was also affected or the data for the month is incomplete. But even with those two major disruptions, checkouts keep rising. Seattle's public library
-system now lends out over 700k books per month. 
 
-### Total checkouts per month by type
+Somewhat surprisingly, at least to me, @fig-one shows a pretty strong upward trend. I would have guessed that fewer people were renting books from the library, but alas, I was wrong. There are two interesting points that jump out. One is the now familiar COVID 'dip', but the other was a bit mysterious to me--someone decidedly *not* from the west coast. After a little googling, it turns out Seattle's library system suffered a [ransomware attack](https://www.libraryjournal.com/story/seattle-public-library-recovering-from-ransomware-attack) in May 2024. It is hard to pin down exactly what services went down and when they came back up, but the dataset is missing data from May to June of 2024, and it appears either July was also affected or the data for the month is incomplete. Even with those two major disruptions, checkouts keep rising. Seattle's public library system now lends out over 700k books per month.
 
-But we can do better than just a monthly aggregation. This dataset is much richer than that! What if we disaggregate the monthly totals--into books, audiobooks and ebooks. Are all book rentals trending in the same
-direction?
+### Total Checkouts Per Month by Type
 
-```{r disaggregated_total_books_by_month}
-material_type_checkouts_by_month <- monthly_checkouts |> 
-  janitor::clean_names() |> 
-  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |>
-  group_by(checkout_year, checkout_month, material_type) |> 
-  summarise(monthly_checkouts = sum(checkouts)) |> 
-  collect() |> 
-  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
-                              "%Y %m"))
+But we can do better than just a monthly aggregation, this dataset is much richer than that! What if I disaggregate the monthly totals--into books, audiobooks and ebooks. Are all book rentals trending in the same direction?
+
+```{r disaggregated_total_books_by_month, eval = FALSE}
+# material_type_checkouts_by_month <- monthly_checkouts |> 
+#   janitor::clean_names() |> 
+#   filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |>
+#   group_by(checkout_year, checkout_month, material_type) |> 
+#   summarise(monthly_checkouts = sum(checkouts)) |> 
+#   collect() |> 
+#   mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
+#                               "%Y %m"))
+# # save data as pin
+# board |> pin_write(name = 'plot_data', x = material_type_checkouts_by_month, versioned = TRUE)
+
+material_type_checkouts_by_month <- board |> pin_read('plot_data', version = '20250926T194043Z-98e13')
 
 #retrieve the last date to use to attach annotation to
 get_end_labels <- function(df, filter_var){
@@ -290,7 +310,7 @@ perc_increase <- material_type_checkouts_by_month |>
   arrange(desc(year_month)) |> 
   mutate(perc_inc = (monthly_checkouts - lead(monthly_checkouts))/lead(monthly_checkouts) * 100)
 
-material_type_checkouts_by_month |> 
+p2 <- material_type_checkouts_by_month |> 
   ggplot(aes(x = year_month, y = monthly_checkouts, color = material_type))+
   geom_line(linewidth = .6)+
   geom_label(data = get_end_labels(material_type_checkouts_by_month, year_month == max(year_month)),
@@ -307,16 +327,16 @@ material_type_checkouts_by_month |>
   )+
   geom_segment(data = physical_book_pre_covid, aes(x = as.Date('2005-01-01'),
                                              xend = as.Date('2020-02-01'),
-                                             y = average), color = 'gray',linetype = 'dashed')+
+                                             y = average), color = 'gray25',linetype = 'dashed')+
   geom_segment(data = physical_book_post_covid, aes(x = as.Date('2020-03-01'),
                                               xend = as.Date('2025-09-01'),
-                                              y = average), color = 'gray',
+                                              y = average), color = 'gray25',
                                            linetype = 'dashed')+
   annotate(geom = 'text', x = as.Date('2005-07-01'), y = 325000,
-           label = round(physical_book_pre_covid$average, 0),
+           label = scales::label_number(big.mark = ',')(physical_book_pre_covid$average),
            size = 3, family = "Karla")+
   annotate(geom = 'text', x = as.Date('2025-07-01'), y = 190000,
-           label = round(physical_book_post_covid$average, 0),
+           label = scales::label_number(big.mark = ',')(physical_book_post_covid$average),
            size = 3, family = "Karla")+
   annotate(geom = 'rect', xmin = as.Date('2019-06-01'),
            xmax = as.Date('2021-01-01'), ymin = 180000, ymax = 260000,
@@ -328,40 +348,54 @@ material_type_checkouts_by_month |>
     legend.position = 'None'
   )
   
+# ggsave('total_checkouts_by_type.png', p2, bg = 'white')
 ```
 
-Well, not exactly! Immediately, you can see that physical book rentals were decimated by COVID. If I remember correctly, my local library stopped lending completely for the first couple months and even after that it was fairly limited. More confusing is why physical books haven't really recovered. You can see that the average number of physical books that are checked out is well over 100k lower than pre-pandemic.
+![Monthly Checkouts By Book Type](total_checkouts_by_type.png){#fig-two width=100%}
 
-But if we just look at the average monthly checkout from 2019 vs 2024, we actually see the reverse--*more* books are being checked out. This lines up with our first graph of checkouts by month which, even with the COVID dip, showed a steadily increasing volume of checkouts for the system as a whole. What appears to have happened is that the COVID dip in physical checkouts coincided with a nearly 30% increase in ebook rentals. That bump in ebook adoption has not gone away and as you can see from the plot, ebooks(and audiobooks) are actually both checked out more often that physical books at this point.
+Well, not exactly! Immediately, @fig-two shows that physical book rentals were decimated by COVID. If I remember correctly, my local library stopped lending completely for the first couple months and even after that it was fairly limited. More confusing is why physical books haven't really recovered. You can see that the average number of physical books that are checked out(indicated by the gray dashed lines) is well over 100k lower than pre-pandemic.
 
-```{r table_pre_post_pandemic_comparison}
-material_type_checkouts_by_month |> 
-  ungroup() |> 
+```{r table_pre_post_pandemic_comparison, eval = FALSE}
+pre_post_covid_monthly_average_table <- material_type_checkouts_by_month |> 
   filter(checkout_year == 2019 | checkout_year == 2024) |>
+  summarise(total_checkouts = sum(monthly_checkouts)) |> 
   group_by(checkout_year) |> 
-  summarise(n = mean(monthly_checkouts)) |> 
+  summarise(n = mean(total_checkouts)) |> 
   gt() |> 
-  table_format() |> 
+  format_table_header() |> 
+  format_table_numbers() |> 
   cols_label(n = 'Average Monthly Checkouts')
+
+
+
+gtsave(pre_post_covid_monthly_average_table, 'pre_post_covid_monthly_average_table.png')
 ```
 
-### Total checkouts digital versus physical
+![Pre/Post Covid Montly Average Checkouts](pre_post_covid_monthly_average_table.png){#tbl-four width=100%}
 
-If we look at the breakdown of just digital versus physical checkouts, we can see that the pandemic
-serves as a sort of paradigm shift. Digitial checkouts had been catching up to physical for nearly a decade,
-but the inaccessibility of physical books for the COVID period seems to have nudged people to make the digital
-swap. Physical book checkouts seem to have stabilized at a level roughly 60% lower than pre-pandemic,
-while digital checkouts have continued their upward march. 
-```{r digital_v_physical_rentals}
-usage_class_monthly <- monthly_checkouts |> 
-  janitor::clean_names() |> 
-  filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
-  group_by(checkout_year, checkout_month, usage_class) |> 
-  summarise(monthly_checkouts = sum(checkouts)) |> 
-  collect() |> 
-  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, ' ', checkout_month), "%Y %m")))
 
-usage_class_monthly |> 
+But if you look at the average total monthly checkouts from 2019 vs 2024 in @tbl-four, you actually see the reverse--*more* books are being checked out. This lines up with @fig-one which, even with the COVID dip, shows a steadily increasing volume of checkouts for the system as a whole. What appears to have happened is that the COVID dip in physical checkouts coincided with a nearly 30% increase in ebook rentals. That '*temporary*' bump in ebook adoption has not been temporary at all and as you can see in @fig-two, ebooks(and audiobooks) are both checked out more often that physical books these days. In the last 15 years, ebook checkouts have increased by roughly 6000%! So physical book checkouts might be down(~-40-50%), but overall, Seattle is lending out more books than ever. They are just in different formats than before.
+
+
+### Total Checkouts Digital Versus Physical
+
+Since the physical/digital checkout shift is so stark, I wanted a better look at it.  @fig-three shows that the pandemic served as a sort of paradigm shift. Digital checkouts had been catching up to physical checkouts for nearly a decade, but the inaccessibility of physical books during the COVID period seems to have nudged people to make the digital swap. Physical book checkouts appear to have stabilized at a level roughly 40-50% lower than pre-pandemic, while digital checkouts have continued their upward trend.
+
+```{r digital_v_physical_rentals, eval = FALSE}
+# usage_class_monthly <- monthly_checkouts |> 
+#   janitor::clean_names() |> 
+#   filter_by_condition(material_type %in% c('EBOOK', 'AUDIOBOOK', 'BOOK')) |> 
+#   group_by(checkout_year, checkout_month, usage_class) |> 
+#   summarise(monthly_checkouts = sum(checkouts)) |> 
+#   collect() |> 
+#   mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, ' ', checkout_month), "%Y %m")))
+# 
+# board |> pin_write('plot_data', x = usage_class_monthly, versioned = TRUE)
+
+usage_class_monthly <- board |> 
+  pin_read('plot_data', version = '20250926T200549Z-a0af2')
+
+p3 <- usage_class_monthly |> 
   ggplot(aes(x = year_month, y = monthly_checkouts, color = usage_class))+
   geom_line(linewidth = .6)+
   geom_label(data = get_end_labels(usage_class_monthly , year_month == max(year_month)),
@@ -380,15 +414,17 @@ usage_class_monthly |>
   theme(
     legend.position = "None"
   )
+
+# ggsave('digital_v_physical_monthly_checkouts.png', p3, bg = 'white')
 ```
 
-### Growth of digital monthly checkouts
-What exactly does that growth look like? Month over month, you see ebooks and audiobooks growing at roughly
-2-3%. There is slight drop, ~-1%,  in physical books, but I'm not sure if that is just a pandemic related 
-artifact, or a true trend. Remember, before COVID, physical book checkouts were not exactly growing, but they 
-were quite stable in their checkout numbers.
+![Digital vs Physical Checkouts By Month](digital_v_physical_monthly_checkouts.png){#fig-three width=100%}
 
-```{r month_to_month_percent_change_functions}
+### Growth of Digital Monthly Checkouts
+
+What exactly does that growth in digital checkouts look like? One way to think about it is to ask how the monthly checkouts change from month to month for each of our mediums. I can calculate the percent changes from month to month with some lag calculations(simply the current months checkouts versus the last months) and that gives me the data I need to plot monthly changes.  
+
+```{r month_to_month_percent_change_functions, eval = FALSE}
 # generates a month_over_month percent change df from a material type summarised df
 month_over_month_percent_change_df <- function(df, filter_var){
   # validate df input
@@ -425,7 +461,7 @@ plot_monthly_change <- function(df1, median_df, adj_fact = 0, use_facet = TRUE,
     geom_hline(data = median_df, aes(yintercept = median_monthly_change),
              color = 'black', linetype = 'dashed')+
     geom_text(data = median_df, 
-            aes(label = median_monthly_change,
+            aes(label = scales::label_percent()(median_monthly_change),
                 x = as.Date("2005-01-01"),
                 y = median_monthly_change + (median_monthly_change * adj_fact)),
             color = 'black', family = 'Karla', size = 3.5, nudge_x = -100)
@@ -461,8 +497,7 @@ plot_monthly_change <- function(df1, median_df, adj_fact = 0, use_facet = TRUE,
 
 ```
 
-```{r month_to_month_percent_plots}
-
+```{r month_to_month_percent_plots, eval = FALSE}
 # build digital plots
 month_to_month_percent_change_digital <- 
   month_over_month_percent_change_df(material_type_checkouts_by_month,
@@ -495,32 +530,39 @@ physical_plot <- plot_monthly_change(df1 = month_to_month_percent_change_physica
 physical_no_2020_plot <- plot_monthly_change(df1 = month_to_month_percent_change_physical_no_2020,
                     median_df = calculate_median_monthly_change(month_to_month_percent_change_physical_no_2020),
                     label_y = NULL,
-                    adj_fact = -4, use_facet = TRUE, adjust_color = TRUE,
+                    adj_fact = -5, use_facet = TRUE, adjust_color = TRUE,
                     .color = "#008B45FF")
 
-digital_plots / (physical_plot + physical_no_2020_plot)
+month_over_month_change_plots <- digital_plots / (physical_plot + physical_no_2020_plot)
+
+# ggsave('month_over_month_change_plots.png', month_over_month_change_plots)
 
 ```
 
-Looking at the plot makes this a little clearer. We can see that while all types of checkouts vary a lot,
-the digital mediums are clearly centered above 0, while the physical books essentially look like they are 
-randomly flucuating around 0. It is a subtle difference, but 2% growth a year versus no growth is a large difference magnified by time. 2% a year over 10 years would be nearly 22% growth in ebook checkouts!
-
-
-```{r median_monthly_changes_table}
-material_type_checkouts_by_month |> 
+```{r median_monthly_changes_table, eval = FALSE}
+median_monthly_changes_table <- material_type_checkouts_by_month |> 
   month_over_month_percent_change_df(material_type %in% c("EBOOK", "BOOK", "AUDIOBOOK")) |> 
   calculate_median_monthly_change() |> 
   gt() |> 
-  table_format(is_percent = TRUE, n = 'median_monthly_change')
+  format_table_numbers(is_percent = TRUE, n = 'median_monthly_change')
+
+# gtsave(median_monthly_changes_table, 'median_monthly_changes_table.png')
 ```
 
+![Monthly Percentage Change in Checkouts](month_over_month_change_plots.png){#fig-four width=100%}
 
-### A look at variation over the years
+![Monthly Percentage Change Table](median_monthly_changes_table.png){#tbl-five width=100%}
+
+Month over month, @fig-four shows ebooks and audiobooks growing at roughly 2-3%. There is slight drop, \~-1%, in physical books. Initially, I thought this was still related to some sort of COVID effect, but even when you look at only 2005-2019 physical book data, the -1% montly change is still there. So physical books checkouts *are* quite stable, but they are also declining. Whether that trend continues remains to be seen.
+
+It's also clear from @fig-four that, while all types of checkouts vary a lot from month to month, the digital mediums are clearly centered above 0, while the physical books essentially look like they are randomly fluctuating around 0. It is a subtle difference, but 3% growth a month versus no growth is a large difference when magnified by time. If you started with 10 ebook checkouts in month 1 and checkouts grew at 3% a month for 10 years, by year 10, you'd be lending out 337 ebooks. That is a ~3200% increase. I think it's fair to say that physical books aren't in danger of disappearing any time soon, but it definitely looks like, at least in shear volume, digital books reign supreme.
+
+### A Look at Checkouts Over the Years
 
 One last way of looking at this breaking it down year by year. 
-```{r yearly_checkout_variation}
-material_type_checkouts_by_month |> 
+
+```{r yearly_checkout_variation, eval = FALSE}
+total_checkouts_by_year <- material_type_checkouts_by_month |> 
   #group_by(material_type) |> 
   summarise(monthly_total = sum(monthly_checkouts)) |> 
   mutate(checkout_year = as.character(checkout_year)) |> 
@@ -539,45 +581,35 @@ material_type_checkouts_by_month |>
   labs(
     x = NULL,
     y = "Total Checkouts",
-    title = 'Total Checkout Variation over the Years',
+    title = 'Total Book Checkouts, By Year',
     subtitle = 'After a pandemic related dip, library checkouts rebounded and continue to grow year after year.'
   )+
   my_plot_theme()
 
-
+# ggsave('total_checkouts_by_year.png', total_checkouts_by_year)
 ```
-We can confirm with this plot what we saw in figure 1--year after year more books are being 
-checked out. It is also worth noting that we see surprisingly little monthly variation in checkouts. I did
-look into this more closely, but there just was not that much there. I went into it thinking people probably
-read more in summer months and maybe during the winter(less outdoor activity, people often have time off, etc),
-but that was, if anything, weakly supported by the data, so I left it out that rabbit hole.
 
-It should be noted that we really cannot make any definitive statements with this information--we cannot
-say that people are reading more just because more books are checked out. For example, what if people are 
-checking out more books from the library because they are *buying* fewer books? Or what if people are checking 
-out more books because it is essentially zero cost to download an ebook or audiobook--if you do not finish it(
-or even start it), it does not matter because you never had to physically go pickup or return something.
+![Book Checkouts By Year](total_checkouts_by_year.png){#fig-five width=100%}
 
-So there are a whole host of reasons we cannot use this information to say people are reading *more*,
-but we can say that people are using the *library* more--at least for books. And that is good news in my book.
+
+I can confirm with @fig_five what we saw in @fig-one--year after year more books are being checked out.[^total-checkouts-year-note] It is also worth noting how little monthly variation there is in checkouts. I did look into this more closely, but there just was not that much there. I went into it thinking people probably read more in summer months and maybe during the winter(less outdoor activity, people often have time off, etc), but that was, if anything, weakly supported by the data, so I left out that rabbit hole.
+
+[^total-checkouts-year-note]: If it wasn't clear, the grey lines are all the years before 2019.
+
+So what have we learned so far? Well, I cannot make any definitive statements, but Seattl-ites(?) are at the very least checking *out* more books than ever before, roughly ~700,000 a month! Again, I cannot say that people are reading more just because more books are checked out. For example, what if people are checking out more books from the library because they are *buying* fewer books? Or what if people are checking out more books because it is essentially zero cost to download an ebook or audiobook--if you do not finish it( or even start it), it does not matter because you never had to physically go pickup or return something.
+
+So there are a whole host of reasons we cannot use this information to say people are reading *more*, but we can say that people are using the *library* more--at least for books. And that is good news in my book.
 
 ## What do people read?
 
-A second interesting question to me is--what the heck do people read. Do people read more fiction or nonfiction?
-Are there specific subjects that are very popular? What about authors? Or maybe publishers? Luckily, a lot of 
-these questions look like they can be answered with our dataset. Let's dive in!
+A second interesting question to me is--what the heck do people read. Do people read more fiction or nonfiction? Are there specific subjects that are very popular? What about authors? Or maybe publishers? Luckily, a lot of these questions look like they can be answered with our dataset. Let's dive in!
 
 ### What are the most popular books
 
-I want to begin by looking at what books are most represented in the dataset. I have a working theory that 
-some books are overwhelmingly popular and actually make up a huge percentage of total checkouts--and that 
-that percentage is increasing over time. In other words, fewer books are taking up a greater share of the total
-checkouts. Let's see if we can tease out whether that is true.
+I want to begin by looking at what books are most represented in the dataset. I have a working theory that some books are overwhelmingly popular and actually make up a huge percentage of total checkouts--and that that percentage is increasing over time. In other words, fewer books are taking up a greater share of the total checkouts. Let's see if we can tease out whether that is true.
 
-First, what *are* the most popular books. For now I am going to bundle physical, ebook, and audiobooks together.
-Right away we have a bit of a problem. Titles are messy! Books, ebooks and audiobooks often have slight
-variations in the title of the same book. Different *versions* of a book might have slightly different titles.
-Different publications might have different titles. As an example, take a look at *The Goldfinch*.
+First, what *are* the most popular books. For now I am going to bundle physical, ebook, and audiobooks together. Right away we have a bit of a problem. Titles are messy! Books, ebooks and audiobooks often have slight variations in the title of the same book. Different *versions* of a book might have slightly different titles. Different publications might have different titles. As an example, take a look at *The Goldfinch*.
+
 ```{r base_top_25_df}
 total_checkouts_by_title <- monthly_checkouts |> 
   select(-ISBN) |> 
@@ -596,13 +628,10 @@ top_1000 <- total_checkouts_by_title |>
 top_1000 |> 
   filter(grepl('the goldfinch.*', title)) |> 
   gt() |> 
-  table_format(n = 'total')
+  format_table_header()
 ```
-That single book has 4 different title variations. Honestly, this is pretty annoying to deal with. My first 
-thought was to do some fuzzymatching to group those titles together. This turned out to be very tricky and 
-finicky and really didn't work that well. Instead, I'm going to use tried and true regex to hack away at the 
-titles and get them semi-grouped. This will *not* be a perfect solution, but it is good enough for my
-purposes here.
+
+That single book has 4 different title variations. Honestly, this is pretty annoying to deal with. My first thought was to do some fuzzymatching to group those titles together. This turned out to be very tricky and finicky and really didn't work that well. Instead, I'm going to use tried and true regex to hack away at the titles and get them semi-grouped. This will *not* be a perfect solution, but it is good enough for my purposes here.
 
 ```{r tidy_titles}
 tidy_titles <- function(df){
@@ -620,8 +649,7 @@ tidy_titles <- function(df){
 }
 ```
 
-After taking the top 1000 most checked out titles from the full monthly dataset, the title cleanup pares 
-that down to 789 titles. Like I said, messy titles! Let us take a look at the top 25 most checked out titles.
+After taking the top 1000 most checked out titles from the full monthly dataset, the title cleanup pares that down to 789 titles. Like I said, messy titles! Let us take a look at the top 25 most checked out titles.
 
 ```{r bar_plot_functions}
 bar_plot_theme <- function(base_family="Karla", 
@@ -710,9 +738,45 @@ make_bar_plot(top_25, x_var = total, y_var = title, .plot_title = 'Top 25 Most C
                     .x_nudge = 500)
 ```
 
-This is about what I expected. There is a good mix of fiction and nonfiction and there are a lot of books
-I recognize from lists like the NYT bestsellers. Just out of curiousity, how does this compare to a plot
-of the most checked out book from each year in our dataset?
+This is about what I expected. There is a good mix of fiction and nonfiction and there are a lot of books I recognize from lists like the NYT bestsellers. Does this look any different if we examine ebooks, books, and audiobooks separately?
+
+```{r top_titles_by_type}
+total_checkouts_by_title_and_type <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  filter_by_condition(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"), !if_any(everything(), is.na)) |> 
+  group_by(material_type, title) |> 
+  summarise(total = sum(checkouts, na.rm = TRUE)) |> 
+  arrange(desc(total)) |> 
+  collect()
+
+top_1000_type <- total_checkouts_by_title_and_type |> 
+  slice_head(n = 1000) |> 
+  mutate(title = tolower(title))
+
+cleaned_totals_type <- tidy_titles(top_1000_type) |> 
+  group_by(material_type, title) |> 
+  summarise(total = sum(total, na.rm = TRUE)) |> 
+  arrange(desc(total)) 
+
+top_25_type <- cleaned_totals_type |> 
+  slice_head(n = 15) |> 
+  mutate(title = str_to_title(title))
+
+e <- make_bar_plot(top_25_type |>  filter(material_type == 'EBOOK'), x_var = total, y_var = title,
+                   .x_nudge = 100, .plot_subtitle = 'Ebooks',
+                   .plot_title = "What are the top Titles for each book type?", title_size = 16)
+b <- make_bar_plot(top_25_type |>  filter(material_type == 'BOOK'), x_var = total, y_var = title,
+                   .x_nudge = 50, .plot_subtitle = 'Books')
+a <- make_bar_plot(top_25_type |>  filter(material_type == 'AUDIOBOOK'), x_var = total, y_var = title,
+                   .x_nudge = 200, adjust_y = TRUE, filter_y_by = 15000, .plot_subtitle = 'Audiobooks')
+
+e/b/a
+```
+
+A little bit, yes. Physical books are dominated by children's books. This makes some sense to me as the e-ink ebook or the audiobook is a pretty inferior medium with which to present a picture rich kids book. Interestingly, if you then look at ebooks and audiobooks, what effectively has happened is that ebooks and audiobooks now show mainly adult books. I would not have expected this before looking at the data, but in hindsight it makes sense to me. Anecdotally, I remember pretty vividly going to the library as a child and checking out 20 books at a time, so of course kids books are a huge portion of checkouts and they just don't translate as well to digital formats--yet.
+
+Just out of curiosity, how does this compare to a plot of the most checked out book from each year in our dataset?
 
 ```{r top_checkout_each_year}
 top_by_year <- monthly_checkouts |> 
@@ -755,16 +819,12 @@ make_bar_plot(top_book_each_year, x_var = total, y_var = title, .plot_title = 'W
                     .x_nudge = 150, adjust_y = TRUE, filter_y_by = 5000)
 ```
 
-So only 8 of the most popular books of a specific year make the all time top 25 list. In other words,
-you need sustained popularity over many years to make that list. That does point towards book popularity 
-being a very ephemeral thing--books get very popular for whatever reason and then most of them fall off
-very quickly. We will look a bit later at whether that phenomenon is becoming stronger recently.
+Only 8 of the most popular books of a specific year make the all time top 25 list. In other words, you need sustained popularity over many years to make that list. That does point towards book popularity being a very ephemeral thing--books get very popular for whatever reason and then most of them fall off very quickly. We will look a bit later at whether that phenomenon is becoming stronger recently.
 
 ### Are people Fiction or Non-Fiction readers?
 
-I think a good place to start when looking at what type of stuff people read is just--do people read
-fiction or nonfiction books? Personally, I split about 50/50, but I know plenty of people who read 
-only one or the other. Let us look at checkouts of the two and see how it breaks down.
+I think a good place to start when looking at what type of stuff people read is just--do people read fiction or nonfiction books? Personally, I split about 50/50, but I know plenty of people who read only one or the other. Let us look at checkouts of the two and see how it breaks down.
+
 ```{r fiction_v_nonfiction}
 # this is 100m+ row df. be careful with it
 subject_df <- monthly_checkouts |>  
@@ -807,8 +867,7 @@ fiction_and_nonfiction |>
   scale_x_continuous(breaks = seq(2005, 2025, by = 2))
 ```
 
-Broadly, people(at least Seattl-ites?) seem to read a little bit more fiction than nonfiction. But there is 
-an interesting gap that opens up starting around 2011. That is when ebooks started to become popular. Maybe if we break this down a little more we can see what is happenening more clearly.
+Broadly, people(at least Seattl-ites?) seem to read a little bit more fiction than nonfiction. But there is an interesting gap that opens up starting around 2011. That is when ebooks started to become popular. Maybe if we break this down a little more we can see what is happening more clearly.
 
 ```{r fiction_v_nonfiction_by_material_type}
 #get typed dataframe
@@ -840,10 +899,8 @@ fiction_and_nonfiction_by_material_type |>
   )+
   scale_x_continuous(breaks = seq(2005, 2025, by = 5))
 ```
-Well, that is interesting. Almost no physical books are tagged as nonfiction and very few are even tagged
-as fiction. What is going on there? As far as I can tell, this is kind of a result of Dewey Decimal 
-system. Physical books have been classified by the [hierarchical Dewey system](https://en.wikipedia.org/wiki/List_of_Dewey_Decimal_classes#) for ~150 years. 
-Noteably, the system does not have categories like nonfiction. Instead, you have classes, divisions and sections. So science is a class; that's broken down into divisions- science, mathematics, astronomy, physics, etc; and that's divided into sections-algebra, arithmetic, topology, etc. So the result is that physical books are classified by the Dewey system, and ebooks/audiobooks are classified by some other system. We can see this by pulling out a random book as an example.
+
+Well, that is interesting. Almost no physical books are tagged as nonfiction and very few are even tagged as fiction. What is going on there? As far as I can tell, this is kind of a result of Dewey Decimal system. Physical books have been classified by the [hierarchical Dewey system](https://en.wikipedia.org/wiki/List_of_Dewey_Decimal_classes#) for \~150 years. Notably, the system does not have categories like nonfiction. Instead, you have classes, divisions and sections. So science is a class; that's broken down into divisions- science, mathematics, astronomy, physics, etc; and that's divided into sections-algebra, arithmetic, topology, etc. So the result is that physical books are classified by the Dewey system, and ebooks/audiobooks are classified by some other system. We can see this by pulling out a random book as an example.
 
 ```{r book_classification_example}
 class_example <- subject_df |> 
@@ -867,11 +924,7 @@ class_example |>
     )
 ```
 
-So I pulled out *Capital in the Twenty-First Century*. Physical books list the subjects as captial,
-income distribution, labor economics and wealth, but ebooks label it as business and nonfiction. That is
-*very* different and every book in the dataset is like this. This certainly muddiest the picture of what fiction 
-versus nonfiction acutally means in the dataset. Maybe if we look at the top subjects within each book type we can
-make more sense of things.
+So I pulled out *Capital in the Twenty-First Century*. Physical books list the subjects as capital, income distribution, labor economics and wealth, but ebooks label it as business and nonfiction. That is *very* different and every book in the dataset is like this. This certainly muddies the picture of what fiction versus nonfiction actually means in the dataset. Maybe if we look at the top subjects within each book type we can make more sense of things.
 
 ### What subjects do people read about?
 
@@ -909,11 +962,7 @@ audiobooks <- make_bar_plot(book_type_subjects |>
 books /ebooks / audiobooks
 ```
 
-The subject lists look very different at first glance, but are they really? With books, people read
-mystery fiction, fantasy fiction, historical fiction, suspense fiction. That's all present in 
-ebooks and audiobooks, but it's just fantasy or suspense. The big, tentpole sort of categories 
-are broadly the same across medium type. I think the main difference is that physical book subject categories
-are *much* more specific. Take a look at the table below.
+The subject lists look very different at first glance, but are they really? With books, people read mystery fiction, fantasy fiction, historical fiction, suspense fiction. That's all present in ebooks and audiobooks, but it's just fantasy or suspense. The big, tentpole sort of categories are broadly the same across medium type. I think the main difference is that physical book subject categories are *much* more specific. Take a look at the table below.
 
 ```{r number_of_subjects_table}
 total_subjects <- subject_df |> 
@@ -928,7 +977,7 @@ book_sub_sample <- subject_df |>
   filter(material_type == 'BOOK') |> 
   slice_head(n = 10)
 
-wrap_table(total_subjects |> gt() |> table_format(n = 'total')) /
+wrap_table(total_subjects |> gt() |> format_table_header()) /
   wrap_table(book_sub_sample |>  gt() |>  tab_style(
       style = list(
         cell_text(weight = 'bold',
@@ -939,24 +988,14 @@ wrap_table(total_subjects |> gt() |> table_format(n = 'total')) /
     ))
 ```
 
-That's not a mistake--physical books have over 400,000 different subject classifications!
-You can glimpse the specificity in the slice of book subjects, but it really is incredible the level
-of detail the subject categorization goes into. Ebooks and audiobooks are not remotely at the same
-level of detail. Ultimately though, I'm not sure this matters. The 'popular' subjects are more or less the same
-across the mediums, with perhaps one niche exception. Physical books still seem to be very popular for books with 
-pictures. Graphic novels, comics, picture books, nursery rhymes all appear near the top of the most checked
-out subjects for physical books. I think this makes sense. Of course it's nicer to read a comic with a nice
-physical copy than with an e-ink display. How long this holds true as e-ink and tablets improve and become
-cheaper is anyones guess.
+That's not a mistake--physical books have over 400,000 different subject classifications! You can glimpse the specificity in the slice of book subjects, but it really is incredible the level of detail the subject categorization goes into. Ebooks and audiobooks are not remotely at the same level of detail. Ultimately though, I'm not sure this matters. The 'popular' subjects are more or less the same across the mediums, with perhaps one niche exception. Physical books still seem to be very popular for books with pictures. Graphic novels, comics, picture books, nursery rhymes all appear near the top of the most checked out subjects for physical books. I think this makes sense. Of course it's nicer to read a comic with a nice physical copy than with an e-ink display. How long this holds true as e-ink and tablets improve and become cheaper is anyone's guess.
 
-This subject comparison does reinforce our earlier conclusion about the fiction/nonfiction split. It may
-be true that that descriptor is muddled when it comes to physical books, but the data is pretty clear with
-ebooks and audiobooks--people read roughly twice as much fiction as nonfiction.
+This subject comparison does reinforce our earlier conclusion about the fiction/nonfiction split. It may be true that that descriptor is muddled when it comes to physical books, but the data is pretty clear with ebooks and audiobooks--people read roughly twice as much fiction as nonfiction.
 
 ### Who are the most popular authors?
 
-One last stop on the 'what people read' tour is a brief look at the most popular authors. I have a feeling this 
-will be a lot of industry standards. Think Stephen King, James Patterson or Jodi Piccoult. 
+One last stop on the 'what people read' tour is a brief look at the most popular authors. I have a feeling this will be a lot of industry standards. Think Stephen King, James Patterson or Jodi Piccoult.
+
 ```{r popular_authors}
 author_totals <- monthly_checkouts |> 
   select(-ISBN) |> 
@@ -983,20 +1022,11 @@ make_bar_plot(author_totals |> arrange(desc(total)) |>
 
 ```
 
-
-I was partial right!. The list is roughly an even split between authors of kids books and authors of popular
-adult books. While I'd love to see more variety or 'more serious' literature names on there, I try not to 
-book shame anyone. If you are reading, you are heading in the right direction in my book.
+I was partial right!. The list is roughly an even split between authors of kids books and authors of popular adult books. While I'd love to see more variety or 'more serious' literature names on there, I try not to book shame anyone. If you are reading, you are heading in the right direction in my book.
 
 ## Are people reading less broadly?
 
-This question is a little trickier to unpack. What exactly do I even mean? I am interested in whether there
-has been a shift over the years in terms of how widely people read. I think one way to answer this question is to
-look at the 'share' of a book or books. For example, does it take 100 different books to add up to 50% of all 
-book checkouts? Or does it take 1000 different books to get to 50%? If it is 1000 books, then people are reading 
-more broadly than if it takes 100. In the extreme, if there was only one book, that book would be 100% of total
-checkouts, and people wouldn't be reading a wide swath of books at all. I am interested in how much, or if,
-this book share has changed throughout the lifespan of the dataset. Let's munge some data and see.
+This question is a little trickier to unpack. What exactly do I even mean? I am interested in whether there has been a shift over the years in terms of how widely people read. I think one way to answer this question is to look at the 'share' of a book or books. For example, does it take 100 different books to add up to 50% of all book checkouts? Or does it take 1000 different books to get to 50%? If it is 1000 books, then people are reading more broadly than if it takes 100. In the extreme, if there was only one book, that book would be 100% of total checkouts, and people wouldn't be reading a wide swath of books at all. I am interested in how much, or if, this book share has changed throughout the lifespan of the dataset. Let's munge some data and see.
 
 ```{r proportion_of_checkouts_plot}
 proportion_of_total_checkouts <- monthly_checkouts |> 
@@ -1035,7 +1065,7 @@ all_books <- cumulative_proportion_of_total_checkouts |>
     x = "# of Books",
     y = "Proportion of Total Checkouts",
     title = 'Are people reading a smaller and smaller subset of books?',
-    subtitle = 'It took ~2x as many books to sum to 75% of total checkouts\n in 2024 versus 2007'
+    subtitle = 'It took ~twice as many books to reach 75% of total checkouts\n in 2024 versus 2007'
   )+
   theme(
     legend.position = 'inside',
@@ -1058,7 +1088,7 @@ top_100 <- cumulative_proportion_of_total_checkouts |>
   labs(
     x = "# of Books",
     y = NULL,
-    subtitle = 'However, the top 100 most checked out books make up \n ~2x greater share of total checkouts: 3% -> 6%'
+    subtitle = 'However, the top 100 most checked out books make up ~6% \n of total checkouts in 2024 versus ~3% in 2007 '
   )+
   theme(
     legend.position = 'None'
@@ -1067,12 +1097,368 @@ top_100 <- cumulative_proportion_of_total_checkouts |>
 all_books + top_100
 ```
 
-This is a really interesting plot, though it might be slightly confusing at first. On the left, we took 
-all books and looked at what share of total checkouts they made up. So if there were 1000 total checkouts
-and book A was checked out 150 times, it's share of total checkouts would be 15%. If we had a second book,
-book B, that was checked out 100 times, that books share is 10%. After doing that for every book, if you order
-the books by checkout share, you can cumulatively sum them up and see the share of the total that X number 
-of books represents. So book A and book B make up 25% of the total checkouts of all books. The plot on the left
-is just doing that with all the books in the dataset, but doing it by year. If we 
+```{r proportion_of_checkouts_by_material_type, eval = FALSE}
+proportion_of_total_checkouts_by_material_type <- monthly_checkouts |> 
+  select(-ISBN) |> 
+  janitor::clean_names() |> 
+  filter_by_condition(checkout_year != 2005, checkout_year != 2006, checkout_year != 2025) |> 
+  build_base_dataset(condition = c(material_type %in% c("BOOK", "EBOOK", "AUDIOBOOK"),
+                                 !if_any(everything(), is.na)),
+                     variable = c(-usage_class, -checkout_type, -creator,
+                                 -publisher, -publication_year)) |> 
+  tidy_titles() |> 
+  group_by(checkout_year,material_type, title) |> 
+  #calculate checkout counts for each title for each year
+  summarise(checkouts = sum(checkouts)) |> 
+  # only grouped by year now; calculate proportion of total checkouts for year for each title
+  mutate(prop_checkouts = checkouts/sum(checkouts)) |> 
+  arrange(desc(checkouts))
+
+cumulative_proportion_of_total_checkouts_by_material_type <- proportion_of_total_checkouts_by_material_type |> 
+  # ordered from most to fewest checkouts, calculate running perc of total checkouts for year
+  mutate(perc_of_total = cumsum(prop_checkouts)/sum(prop_checkouts)) |> 
+  mutate(row_num = row_number(),
+         checkout_year = as.factor(checkout_year))
+
+cumulative_proportion_of_total_checkouts_by_material_type |> 
+  filter(material_type == 'BOOK') |> 
+  ggplot(aes(x = row_num, y = perc_of_total, color = checkout_year))+
+  geom_line(linewidth = .8)+
+  geom_hline(yintercept = .75, linetype = 'dashed', color = 'gray8')+
+  scale_x_continuous(labels = scales::label_comma())+
+  scale_y_continuous(labels = scales::label_percent())+
+  paletteer::scale_color_paletteer_d("cartography::turquoise.pal", dynamic = TRUE)+
+  # facet_wrap(~material_type, scales = 'free_x')+
+  # paletteer::scale_color_paletteer_d("dichromat::BluetoDarkOrange_18")+
+  my_plot_theme()+
+  labs(
+    x = "# of Books",
+    y = "Proportion of Total Checkouts",
+    title = 'Are people reading a smaller and smaller subset of books?',
+    subtitle = 'It took ~twice as many books to reach 75% of total checkouts\n in 2024 versus 2007'
+  )+
+  theme(
+    legend.position = 'inside',
+    legend.title = element_blank(),
+    legend.position.inside = c(.94, .35),
+    legend.key.width = unit(10, 'mm')
+  )+
+  guides(linetype = guide_legend(override.aes = list(size = 2)))
 
 
+cumulative_proportion_of_total_checkouts_by_material_type |> 
+  filter(checkout_year > 2010) |> 
+  filter(row_num < 100) |> 
+  ggplot(aes(x = row_num, y = perc_of_total, color = checkout_year))+
+  geom_line(linewidth = .8)+
+  facet_wrap(~material_type)+
+  # geom_hline(yintercept = .25, linetype = 'dashed', color = 'gray8')+
+  scale_x_continuous(labels = scales::label_comma())+
+  scale_y_continuous(labels = scales::label_percent())+
+  paletteer::scale_color_paletteer_d("cartography::turquoise.pal", dynamic = TRUE)+
+  # paletteer::scale_color_paletteer_d("dichromat::BluetoDarkOrange_18")+
+  my_plot_theme()+
+  labs(
+    x = "# of Books",
+    y = NULL,
+    subtitle = 'However, the top 100 most checked out books make up ~6% \n of total checkouts in 2024 versus ~3% in 2007 '
+  )+
+  theme(
+    legend.position = 'None'
+  )
+```
+
+This is a really interesting plot, though it might be slightly confusing at first. On the left, we took all books and looked at what share of total checkouts they sum to. So if there were 1000 total checkouts and book A was checked out 150 times, its share of total checkouts would be 15%. If we had a second book, book B, that was checked out 100 times, that books share is 10%. After doing that for every book, if you order the books by checkout share, you can cumulatively sum them up and see the share of the total that X number of books represents. So book A and book B make up 25% of the total checkouts of all books. The plot on the left is doing that with all the books in the dataset, but doing it by year. On the left plot, we can see that earlier years are shifted to the left, meaning there are fewer books. So the left plot seems indicates that people are reading *more* broadly. In 2007, roughly 25k different books made up 75% of total checkouts. By 2024, that number has gone *up* to roughly 50k different books representing 75% of checkouts. This holds true even when you break down the totals into ebooks, books and audiobooks.
+
+The right plot offers a caveat though. The right plot essentially zooms in to look at just the top 100 most checked out books and asks the question-what percentage of checkouts does that 100 books represent? Here, we see that later years in our dataset hover around 5.5-6% while earlier years are more in the 3% range. So the small subset of the absolute most popular books make up about twice the share of total checkouts as they did a little over a decade ago.
+
+I think a good way to think of this is that yes, popular books are *more* popular, but our reading distributions have fatter tails. There are all sorts of reasons both of these things can simultaneously be true. Maybe publishers are advertising tentpole books more aggressively, but also publishing is cheaper so a wider list of titles are available to checkout. I would need to bring in some other data sources, like perhaps the inventory of the library, to really dive into this, but that's an analysis for another day.
+
+Long story short, people seem to be reading a little *more* broadly, but popular books are a little *more* popular.
+
+# Can we predict how many checkouts a title will have each month?
+
+I was mainly excited about doing some visualization with this rich dataset. After playing with it for a bit, I realized there were some interesting modeling questions too. For my purpose here, I just want to do a proof of concept. Say we are interesting in providing a prediction of how many times a physical book is going to be checked out next month? Maybe the library wants to make sure books that are probably going to be popular are in prime, easy to see spots when you walk in the library? Maybe they want to allocate more shelf space to books they think are going to be popular? Or maybe they need to have an estimated number of checkouts so they can make sure their stock is high enough to meet that demand? There are all sorts of reasons the library might want this info, so let's see how hard it would be to provide it.
+
+First things first, we need to build a dataset. This pipeline does multiple things at once:
+
+-   Remove ISBN variable: ISBN is almost completely NA and not useful
+-   build_base_dataset: Filters to physical books only and only those with complete information
+    -   Also gets rid of variables that we won't use in modeling
+-   select_top_n_books: determines the n most checked out books of the dataset and then filters the dataset to return just those n titles
+-   add_features: generates a set of new features for our model. Mainly lagged and rolling average features, but also will calculate median checkouts, standard deviation of checkouts, booleans for whether the data is from a summer month, is a children's book, etc.
+
+## Build modeling dataset
+
+```{r build_model_dataset, eval = FALSE}
+top_1000_books_new_features <- monthly_checkouts |>
+  select(-ISBN) |>
+  build_base_dataset(condition = c(UsageClass == "Physical", MaterialType == 'BOOK',
+                              !if_any(everything(), is.na)),
+                variable = c(-UsageClass, -CheckoutType, -MaterialType,
+                             -Subjects)) |> 
+  select_top_n_books(.n = 10) |> 
+  add_features(add_rolling_avg_vars = TRUE,
+               add_lagged_vars = TRUE, 
+               g_vars = "title",
+               .n_lags = c(1, 2, 3, 6, 12),
+               .n_avgs = c(2, 3, 4, 5, 6, 12 ))
+
+# save a pin of this data
+model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
+pins::pin_write(model_board, name = 'dataset', x = top_1000_books_new_features, type = 'rds')
+```
+
+After the dataset is built, I basically use a standard tidymodels framework to build an xgboost model. I'm not going to go into details about the workflow, but the full pipeline is below if you are interested.
+
+## Build Xgboost model
+
+```{r build_xgboost_model, eval = FALSE}
+library(tidymodels)
+library(future)
+library(tictoc)
+library(vip)
+#using 90% of the data as training, 10% testing 
+#This is ordered by year_month, so the last 10% of the dataset is used as testing set
+#This ends up being Dec 2023 - July 2025
+books_split <- initial_time_split(top_1000_books_new_features|> arrange(year_month), prop = .9)
+training <- training(books_split)
+testing <- testing(books_split)
+
+#xgboost_recipe
+xgboost_recipe <- recipe(
+  checkouts ~ checkout_year + checkout_month + is_new +
+              lag_1 + lag_2 + lag_3 + lag_6 + lag_12+ 
+              rolling_avg_2_month + rolling_avg_3_month + rolling_avg_4_month + 
+              rolling_avg_5_month + rolling_avg_6_month +
+              avg_book_checkouts + is_summer + is_december +
+              month_sd + months_old + median_book_checkouts+
+              is_childrens_book+ checkout_book_sd,
+  data = training) |> 
+  step_dummy(all_nominal_predictors()) 
+
+# specify spec
+xgboost_spec <- 
+  # standard set of tree parameters to tune
+  boost_tree(trees = tune(),
+             learn_rate = tune(),
+             tree_depth = tune(),
+             min_n = tune()) |> 
+  set_mode("regression") |> 
+  set_engine("xgboost")
+
+#build tuning grid
+grid <- grid_space_filling(
+  tree_depth(),
+  min_n(),
+  learn_rate(),
+  trees(),
+  size = 10
+)
+
+# xgboost workflow
+xgboost_workflow <-
+  workflow() |> 
+  add_recipe(xgboost_recipe) |> 
+  add_model(xgboost_spec)
+
+# generate folds for cross validation
+folds <- vfold_cv(training)
+
+#set of metrics to be used for tuning and evaluation
+my_metrics <- metric_set(rmse, mape, mae)
+
+#fit model and tune grid parameters
+#using tic/toc to see how long this takes; using future::plan to fit in parallel
+tic()
+plan(multisession, workers = 14)
+xgboost_tune <- 
+  tune_grid(xgboost_workflow, resamples = folds, grid = grid, 
+            control = control_grid(verbose = TRUE),#, save_pred = TRUE, save_workflow = TRUE),
+            metrics = my_metrics)
+toc()
+
+#select the best tuning parameters
+best_fit <- select_best(xgboost_tune)
+
+#feed the optimal tuning parameters into the workflow
+xgb_fit <- finalize_workflow(xgboost_workflow, best_fit)
+
+#with the best model in hand, fit the final model on the training set; then evaluate on the test set
+final <- last_fit(xgb_fit, books_split)
+```
+
+Once the model is fit, we can see how well it performs. \## Evaluate Model
+
+```{r model_evaluation}
+#View metrics
+my_metrics(final |> collect_predictions(),
+             truth = checkouts,
+             estimate = .pred) |> 
+  gt() |> 
+  tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+                  )
+      ),
+      locations = cells_column_labels(everything())
+    )
+
+#View metrics with negative predictions bounded to be equal to zero
+my_metrics(
+  final |> 
+    collect_predictions() |>
+    zero_bound_predictions(),
+  truth = checkouts, estimate = .pred
+  )
+```
+
+With a relatively small chunk of the dataset, 1000 books, we are able to predict checkout counts to within about 2 books a month. We can also look at it as we are off by an average of about 12% on our predictions. That seems pretty solid to me! One important caveat is that I have zero-bounded our predictions. You can't have a negative amount of books checked out, but the model can predict negative values. After fitting the model and generating the predictions, I simply ran through them and set any negative prediction to be equal to zero instead. There is probably a more elegant solution, but I think it makes sense in this use case.
+
+```{r prediction_glance}
+#View a portion of the predictions
+final |> 
+  collect_predictions() |> 
+  zero_bound_predictions() |> 
+  select(.pred, checkouts) |> 
+  bind_cols(testing |>  select(title, year_month)) |> 
+  head() |> 
+  gt() |> 
+  tab_style(
+      style = list(
+        cell_text(weight = 'bold',
+                  transform = 'capitalize'
+                  )
+      ),
+      locations = cells_column_labels(everything())
+    )
+```
+
+A good sanity check after fitting your model and viewing some predictions is to see what features are important in your model. Far and away the most important feature for prediction is the rolling two month average. This makes a ton of sense--what will next months checkouts be? Take the last two months checkouts, average them and predict that. That could be a good base model on its own-in fact it is essentially the MA part of ARIMA time series forecasting. We see that various lengths of moving averages and the average and standard deviation of the number of books checked out that year_month also rank highly in variable importance.
+
+```{r vip_plot}
+#Plot the most important features in the model
+xgb_fit |>  
+  fit(training) |> 
+  extract_fit_parsnip() |>
+  vip(geom = 'point')+
+  my_plot_theme()+
+  labs(
+    title = 'Which model variables contribute the most to the model?'
+  )
+```
+
+As is always the case, this final model pipeline is just a tiny fraction of the paths I explored. Initially, I was pretty confident I wanted to approach this like a time series forecasting problem. Given a book and roughly 240 year_month observations, shouldn't I be able to predict, say, the next 3 months checkouts? Yes, but given that book checkouts typically look like the following plot, it's a little problematic. The data shifts levels pretty dramatically. It is also extremely difficult to predict just how popular a book will be upon release (without more data at least), but after the initial surge, almost all books settle into a 'base load' level. The part of the curve we are really interested in if we are predicting demand is that first year though. This level shifting curve, to my knowledge, isn't something ARIMA/ETS models are particularly great for, and even if they were, I'd need to fit a different model for each of the hundreds of thousands of books. Even with ARIMA being fast to fit, that's going to be prohibitively time consuming.
+
+```{r goldfinch_example}
+goldfinch <- monthly_checkouts |> 
+  filter_by_condition(UsageClass == "Physical", MaterialType == 'BOOK') |> 
+  janitor::clean_names() |> 
+  collect() |> 
+  filter(grepl('The goldfinch.*', title)) |> 
+  tidy_titles() |> 
+  filter(title == 'the goldfinch')
+
+goldfinch |> 
+  mutate(year_month = as.Date(tsibble::yearmonth(paste0(checkout_year, " ", checkout_month)),
+                              "%Y %m")) |> 
+  group_by(title) |> 
+  ggplot(aes(x = year_month, y = checkouts))+
+  geom_line()+
+  my_plot_theme()+
+  line_plot_tweaks()+
+  labs(x = NULL,
+       y = NULL,
+       title = 'Monthly Checkouts for The Goldfinch',
+       subtitle = 'Book checkouts spike after release, drop precipitously after about a year and then settle into relatively low levels')
+  
+```
+
+One approach that seems like it should work, but I couldn't get to perform well, was hierarchical time series modeling. Think about stores like Walmart. They have thousands of products that they want to forecast sales for. How do they do that? Well, one way would be to look at, say, toothbrushes and look at past sales and then use something like ARIMA/ETS to forecast the sales for that product into the future. The problem is that Walmart sells thousands(tens of thousands?) of different products. Does that sound familiar? So how do they do it? Luckily for Walmart, their products fit nicely into hierarchies/groups. A toothbrush can be categorized like so: personal care product -\> oral care product -\> toothbrushes -\> manual toothbrush -\> specific toothbrush. Every product Walmart sells can be organized into a hierarchy like that and then hierarchical time series forecasting will use that structure to provide a coherent forecast that is feasible for a huge number of products. In theory, this should have worked pretty well for forecasting books, but it didn't. I'm not totally sure why, but my guess is that I didn't have a great grouping structure that naturally occurred in the data. You could maybe have something like publisher -\> author -\> title, but that isn't a particularly rich hierarchy nor was it particularly rigid--titles would have multiple publishers, different authors, all sorts of stuff. Whatever the reason, I was able to out perform hierarchical time series pretty quickly with a xgboost model.
+
+## Deploy Model
+
+As one final illustration, I want to set up an API for this model so that you could deploy this into the world and actually use it-maybe in a shiny app or some other website/dashboard. The easiest way to do this is with vetiver, pins, and plumber. First, you take the final, tuned model with the best parameters and you create a vetiver object that will contain all the information necessary to store, version and deploy the model. You then create a model board to write your model to. In a production setting, this would be something like board_s3 or board_rsconnect to deploy through Amazon AWS or Posit Connect (or many other supported platforms), but here I'm just using board_folder to save it locally--you can also use this to save to dropbox/googledrive/etc. Once the board is created you can just write your model to a pin located there.
+
+```{r save_model, eval = FALSE}
+# save version of model
+deployable_model <- xgb_fit |>  fit(training)
+
+vet_model <- vetiver_model(deployable_model, 'final_model_large')
+
+model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
+
+model_board |> 
+  vetiver_pin_write(vet_model)
+```
+
+With the model pinned, now it's fairly easy to deploy. I'm just going to run it locally and show you, but the process is quite similar if you want to deploy to AWS or something similar. You can also run this as a background job in rstudio so that you can keep using your console and still interact with the API locally.
+
+```{r deploy_model}
+v <- model_board |> 
+  vetiver_pin_read('final_model_large', version = '20250925T202148Z-1f6c9')
+
+pr() |> 
+  vetiver_api(v) |> 
+  pr_run(port = 8088)
+
+endpoint <- vetiver_endpoint('http://127.0.0.1:8088/predict')
+
+sample_books <- testing |> 
+  slice_head(n = 10)
+
+predict(endpoint, sample_books)
+```
+
+```{r}
+board <- board_folder('data/final', versioned = TRUE)
+testing_model <- board |>  pin_read('deployable_model', version = '20250925T220144Z-60b27')
+
+model_data <- board |> pin_read('dataset', version = '20250924T150811Z-9067c')
+
+books_split <- initial_time_split(model_data|> arrange(year_month), prop = .9)
+training <- training(books_split)
+testing <- testing(books_split)
+
+testing |> 
+  bind_cols(.preds = testing_model |>  predict(testing) |> zero_bound_predictions()) |>
+  my_metrics(truth = checkouts, estimate = .pred)
+
+temp_books <- monthly_checkouts |>
+  select(-ISBN) |>
+  build_base_dataset(condition = c(UsageClass == "Physical", MaterialType == 'BOOK',
+                              !if_any(everything(), is.na)),
+                variable = c(-UsageClass, -CheckoutType, -MaterialType,
+                             -Subjects))
+temp_sum <- temp_books |> 
+  group_by(title) |> 
+  summarise(total_checkouts = sum(checkouts)) |> 
+  arrange(desc(total_checkouts)) |> 
+  slice(2000:2100) |> 
+  pull(title)
+
+
+next_1000 <- temp_books |> 
+  semi_join(data.frame(title = temp_sum), join_by(title))
+
+featured_next_1000 <- next_1000 |> 
+  add_features(add_rolling_avg_vars = TRUE,
+               add_lagged_vars = TRUE, 
+               g_vars = "title",
+               .n_lags = c(1, 2, 3, 6, 12),
+               .n_avgs = c(2, 3, 4, 5, 6, 12 ))
+
+
+featured_next_1000 |> 
+  bind_cols(.preds = testing_model |>  predict(featured_next_1000) |> zero_bound_predictions()) |>
+  my_metrics(truth = checkouts, estimate = .pred)
+
+testing_model |> 
+  extract_fit_parsnip() |>
+  vip(geom = 'point')
+```
+
+And that's it! Predict returns a vector of checkout predictions given a dataset of model features. From here you could hook this API into your dashboard or whatever else and the world is yours! Of course, this is no where close to a production ready pipeline. For one, the pipeline is a little awkward. If you remember from the variable importance plot, this model heavily relies on rolling averages and lag calculations to generate accurate predictions. Let's say Seattle gets a brand new title in its system. You need to do feature engineering to get the lags, rolling averages, etc. that feed into the model. With a brand new book, those lags and rolling averages are NA for the first n months. Xgboost can handle that just fine, but your model will perform quite badly on brand new books until those features can be calculated. And even if a book is not brand new, you will need to pull the last 12 months of data for each book you want to predict in order get generate the maximum lag and rolling average features. This can be quite expensive depending on how you are pulling that data into the modeling pipeline.
+
+Aside from those awkward feature engineering and cold start problems, we haven't even begun to address anything like model drift or measuring model performance over time. So it's fair to say this is just a barebones implementation, but still--look how easy it was to get this API up and running!

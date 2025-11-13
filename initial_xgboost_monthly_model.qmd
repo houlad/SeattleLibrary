@@ -243,7 +243,7 @@ library(vip)
 #using 90% of the data as training, 10% testing 
 #This is ordered by year_month, so the last 10% of the dataset is used as testing set
 #This ends up being Dec 2023 - July 2025
-books_split <- initial_time_split(top_10_books_new_features|> arrange(year_month), prop = .9)
+books_split <- initial_time_split(top_1000_books_new_features|> arrange(year_month), prop = .9)
 training <- training(books_split)
 testing <- testing(books_split)
 
@@ -340,7 +340,8 @@ books_metrics(
 xgb_fit |> 
   fit(data = training) |> 
   extract_fit_parsnip() |> 
-  vip(geom = 'point')
+  vip(geom = 'point')+
+  my_plot_theme()
 
 #plot predictions vs actuals
 final |> 
@@ -348,7 +349,8 @@ final |>
   #zero_bound_predictions() |> 
   ggplot(aes(x = checkouts, y = .pred))+
   geom_point()+
-  geom_abline(color = 'red')
+  geom_abline(color = 'red')+
+  my_plot_theme()
 ```
 
 
@@ -357,7 +359,11 @@ deployable_model <- xgb_fit |>  fit(training)
 v <- vetiver_model(deployable_model, 'book_preds')
 model_board <- pins::board_folder(path = 'data/testing', versioned = TRUE)
 vetiver_pin_write(board = model_board, v)
-vetiver_pin_read(model_board, book_preds)
+vetiver_pin_read(model_board, "book_preds")
+
+
+pins::pin_write(board = model_board, deployable_model, type = 'rds')
+ts <- pins::pin_read(model_board, 'deployable_model')
 
 plumber::pr() |> 
   vetiver::vetiver_api(v) |> 
