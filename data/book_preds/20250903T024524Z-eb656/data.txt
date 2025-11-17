@@ -1,0 +1,17 @@
+file: book_preds.rds
+file_size: 1775659
+pin_hash: eb65626371eb2814
+type: rds
+title: 'book_preds: a pinned list'
+description: A xgboost regression modeling workflow
+tags: ~
+urls: ~
+created: 20250903T024524Z
+api_version: 1
+user:
+  required_pkgs:
+  - parsnip
+  - recipes
+  - workflows
+  - xgboost
+  renv_lock: ~

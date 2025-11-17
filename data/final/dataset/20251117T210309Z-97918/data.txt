@@ -1,0 +1,10 @@
+file: dataset.rds
+file_size: 435407
+pin_hash: 97918f94795176d2
+type: rds
+title: 100 new books to test deployed model with
+description: ~
+tags: ~
+urls: ~
+created: 20251117T210309Z
+api_version: 1

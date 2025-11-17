@@ -1,0 +1,10 @@
+file: dataset.rds
+file_size: 5431153
+pin_hash: 9067c27177ea8e07
+type: rds
+title: 'dataset: a pinned 183516 x 30 data frame'
+description: ~
+tags: ~
+urls: ~
+created: 20250924T150811Z
+api_version: 1

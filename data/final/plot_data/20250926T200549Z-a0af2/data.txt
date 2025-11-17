@@ -1,0 +1,10 @@
+file: plot_data.rds
+file_size: 5789
+pin_hash: a0af20b53ad90efa
+type: rds
+title: 'plot_data: a pinned 479 x 5 data frame'
+description: ~
+tags: ~
+urls: ~
+created: 20250926T200549Z
+api_version: 1

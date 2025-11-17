@@ -94,7 +94,7 @@ variables <- tibble(variables = names(example_data)) |>
   gt() |> 
   format_table_header()
 
-gtsave(variables, 'variables_table.png')
+gtsave(variables, 'variables_table.png', height = 5)
 ```
 
 ![](variables_table.png){#tbl-one}
@@ -1231,7 +1231,7 @@ top_1000_books_new_features <- monthly_checkouts |>
                               !if_any(everything(), is.na)),
                 variable = c(-UsageClass, -CheckoutType, -MaterialType,
                              -Subjects)) |> 
-  select_top_n_books(.n = 10) |> 
+  select_top_n_books(.n = 1000) |> 
   add_features(add_rolling_avg_vars = TRUE,
                add_lagged_vars = TRUE, 
                g_vars = "title",
@@ -1248,9 +1248,9 @@ top_1000_books_new_features <- monthly_checkouts |>
 
 After the dataset is built, I use a standard tidymodels framework to build an xgboost model. I'm not going to go into details about the workflow, but the full pipeline is below if you are interested.  Why did I choose an xgboost model? They typically perform well on this sort of problem and they are quite easy to implement. In many circumstances they are at or near the state of the art for forecasting. 
 
-Another approach I tried that seems like it should work, but ultimately I couldn't get to perform well- was hierarchical time series modeling. Think about stores like Walmart. They have thousands of products that they want to forecast sales for. How do they do that? Let's say we are forecasting toothbrushes specifically. Well, they can take toothbrushes and look at past sales and then use something like ARIMA/ETS to forecast the sales for that toothbrush in the future. The problem is that Walmart sells thousands(tens of thousands?) of different products. Even with relatively simple ARIMA models, it quickly becoming extremely computationally demanding to forecast each individual item. And they are going to want to update those forecasts frequently! 
+Another approach I tried that seems like it should work, but ultimately I couldn't get to perform well was hierarchical time series modeling. Think about stores like Walmart. They have thousands of products that they want to forecast sales for. How do they do that? Let's say we are forecasting toothbrushes specifically. Well, they can take toothbrushes and look at past sales and then use something like ARIMA/ETS to forecast the sales for that toothbrush in the future. The problem is that Walmart sells thousands(tens of thousands?) of different products. Even with relatively simple ARIMA models, it quickly becomes extremely computationally demanding to forecast each individual item. Not to mention they are going to want to update those forecasts frequently! 
 
-That problem sounds somewhat familiar! So how do they do it? Luckily for Walmart, their products fit nicely into hierarchies/groups. A toothbrush can be categorized like so: personal care product -\> oral care product -\> toothbrushes -\> manual toothbrush -\> specific toothbrush. Every product Walmart sells can be organized into a hierarchy like that and then hierarchical time series forecasting will use that structure to provide a coherent forecast that is feasible for a huge number of products. In theory, this should have worked pretty well for forecasting books, but it didn't. I'm not totally sure why, but my guess is that I didn't have a great group/hierarchy structure that fit the data. I tried something like publisher -\> author -\> title, but that isn't a very rich hierarchy nor was it particularly rigid--titles often have multiple publishers, different authors, different publication dates, etc.  All of those little subtlties made building a good hierarchical structure difficult. Whatever the reason, I was able to out perform my hierarchical time series models pretty quickly with a xgboost model.
+That problem sounds somewhat familiar! So how do they do it? Luckily for Walmart, their products fit nicely into hierarchies/groups. A toothbrush can be categorized like so: personal care product -\> oral care product -\> toothbrushes -\> manual toothbrush -\> specific toothbrush. Every product Walmart sells can be organized into a hierarchy like that and then [hierarchical time series forecasting](https://otexts.com/fpp3/hts.html) will use that structure to provide a coherent forecast that is feasible for a huge number of products. In theory, this should have worked pretty well for forecasting books, but it didn't. I'm not totally sure why, but my guess is that I didn't have a great group/hierarchical structure that fit the data. I tried something like publisher -\> author -\> title, but that isn't a very rich hierarchy nor was it particularly rigid--titles often have multiple publishers, different authors, different publication dates, etc.  All of those little subtlties made building a good hierarchical structure difficult. Whatever the reason, I was able to out perform my hierarchical time series models pretty quickly with a xgboost model.
 
 ```{r build_xgboost_model, eval = FALSE}
 library(tidymodels)
@@ -1305,7 +1305,7 @@ xgboost_workflow <-
 folds <- vfold_cv(training)
 
 #set of metrics to be used for tuning and evaluation
-my_metrics <- metric_set(rmse, mape, mae)
+my_metrics <- metric_set(rmse, mape, mae, mase)
 
 #fit model and tune grid parameters
 #using tic/toc to see how long this takes; using future::plan to fit in parallel
@@ -1325,17 +1325,49 @@ xgb_fit <- finalize_workflow(xgboost_workflow, best_fit)
 
 #with the best model in hand, fit the final model on the training set; then evaluate on the test set
 final <- last_fit(xgb_fit, books_split)
+
+# save version of model
+deployable_model <- xgb_fit |>  fit(training)
+
+vet_model <- vetiver_model(deployable_model, 'final_model_large')
+
+model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
+
+model_board |>
+  vetiver_pin_write(vet_model)
 ```
+
+In a nutshell, the pipeline takes the top 1,000 book dataset I generated earlier and then 
+  
+  1) Splits the data into training/testing sets
+  2) Builds a xgboost model recipe with all the features I want
+  3) Builds a model specification--essentially I tell the pipeline I want a regression xgboost model and what model features I want to tune
+  4) Builds a tuning grid with model features I need to tune - # of trees, tree depth, learning rate, etc
+  5) Adds all of this to a model workflow 
+  6) Trains the model in parallel with cross validation and the metrics I tell it to use
+  7) Selects the best parameters according to tuning and the finalize the workflow and fit the model on the training set
+  8) Saves the model in a pin for later deployment and use
 
 ## Evaluate the Model
 
-Once the model is fit, it's time to see how well it performs.
+Now that the model is fit and saved, I can begin to evaluate it.
 
-```{r model_evaluation}
+```{r model_evaluation, eval = FALSE}
+# load pin of final model
+data_board <- pins::board_folder(path = 'data/final')
+final_model <- pins::pin_read(board = data_board, name = 'final_model_large')
+
+# load pin of dataset used to build final model
+model_dataset <- pins::pin_read(data_board, 'dataset', version = "20250924T150811Z-9067c")
+# split the dataset back into training and testing sets
+books_split <- initial_time_split(model_dataset |> arrange(year_month), prop = .9)
+training <- training(books_split)
+testing <- testing(books_split)
+
 #View metrics
-my_metrics(final |> collect_predictions(),
-             truth = checkouts,
-             estimate = .pred) |> 
+xgboost_error_metrics_table <- testing |>
+  bind_cols(.preds = final_model$model |> unbundle() |>  predict(testing) |> zero_bound_predictions()) |>
+  my_metrics(truth = checkouts, estimate = .pred) |> 
   gt() |> 
   tab_style(
       style = list(
@@ -1346,23 +1378,19 @@ my_metrics(final |> collect_predictions(),
       locations = cells_column_labels(everything())
     )
 
-#View metrics with negative predictions bounded to be equal to zero
-my_metrics(
-  final |> 
-    collect_predictions() |>
-    zero_bound_predictions(),
-  truth = checkouts, estimate = .pred
-  )
+gtsave(xgboost_error_metrics_table, 'xgboost_error_metrics_table.png')
 ```
 
-With a relatively small chunk of the dataset, 1000 books, we are able to predict checkout counts to within about 2 books a month. We can also look at it as we are off by an average of about 12% on our predictions. That seems pretty solid to me! One important caveat is that I have zero-bounded our predictions. You can't have a negative amount of books checked out, but the model can predict negative values. After fitting the model and generating the predictions, I simply ran through them and set any negative prediction to be equal to zero instead. There is probably a more elegant solution, but I think it makes sense in this use case.
+![Model Error Metrics](xgboost_error_metrics_table.png){#tbl-nine width=100%}
 
-```{r prediction_glance}
+As you can see in @tbl-nine, with a relatively small chunk of the dataset, 1000 books, I'm able to predict checkout counts to within about 3 books a month. We can also look at it as we are off by an average of about % on our predictions. That seems pretty solid to me! One important caveat is that I have zero-bounded our predictions. You can't have a negative amount of books checked out, but the model can predict negative values. After fitting the model and generating the predictions, I simply ran through them and set any negative prediction to be equal to zero instead. There is probably a more elegant solution, but I think it makes sense in this use case.
+
+```{r prediction_glance, eval = FALSE}
 #View a portion of the predictions
-final |> 
-  collect_predictions() |> 
-  zero_bound_predictions() |> 
+example_predictions <- testing |>
+  bind_cols(.preds = final_model$model |> unbundle() |>  predict(testing) |> zero_bound_predictions()) |> 
   select(.pred, checkouts) |> 
+  mutate(.pred = round(.pred, 2)) |> 
   bind_cols(testing |>  select(title, year_month)) |> 
   head() |> 
   gt() |> 
@@ -1374,25 +1402,147 @@ final |>
       ),
       locations = cells_column_labels(everything())
     )
+gtsave(example_predictions, 'example_predictions.png')
 ```
 
-A good sanity check after fitting your model and viewing some predictions is to see what features are important in your model. Far and away the most important feature for prediction is the rolling two month average. This makes a ton of sense--what will next months checkouts be? Take the last two months checkouts, average them and predict that. That could be a good base model on its own-in fact it is essentially the MA part of ARIMA time series forecasting. We see that various lengths of moving averages and the average and standard deviation of the number of books checked out that year_month also rank highly in variable importance.
+@tbl-ten might be a little easier to interpret. This is just a snippet of the testing set with model predictions shown next to actual checkout counts. As you can see, these predictions seem pretty good.
 
-```{r vip_plot}
+![Model Predictions](example_predictions.png){#tbl-ten width=100%}
+
+Aside from pure model performance, I also am interested in what features are important in my model. I can visualize this with some VIP(variable importance plots). 
+
+```{r vip_plot, eval = FALSE}
 #Plot the most important features in the model
-xgb_fit |>  
-  fit(training) |> 
+vip_plot <- final_model$model |>
+  unbundle() |> 
   extract_fit_parsnip() |>
-  vip(geom = 'point')+
+  vip(geom = 'point') + 
   my_plot_theme()+
   labs(
     title = 'Which model variables contribute the most to the model?'
   )
+
+ggsave('vip_plot.png', vip_plot)
 ```
+
+![Variable Importance Plot](vip_plot.png){#fig-fifteen width=100%}
+
+@fig-fifteen shows the rolling two month average as far and away the most important feature. Intuitively, that makes a ton of sense to me--what will next months checkouts be? Take the last two months checkouts, average them and predict that. That could be a good base model on its own-in fact it is essentially the MA part of ARIMA time series forecasting. After the two month rolling average, we see that checkout standard deviation and the first lag variable rank very highly, followed by a bunch of variables of similar importance. One thing I did find surprising is that dummy variables identifying whether a book was a childrens book or whether the month was a summer month or christmas month didn't really help the model at all.
+
+## Deploy Model
+
+Now that I have a working, semi-decent model, I want to set up an API so that I could deploy this into the world and actually use it-maybe in a shiny app or some other website/dashboard. The easiest way to do this is with vetiver, pins, and plumber. After you have your final, tuned model with your best parameters, you create a vetiver object that will contain all the information necessary to store, version and deploy the model. You then create a model board to write your model to. In a production setting, this would be something like board_s3 or board_rsconnect to deploy through Amazon AWS or Posit Connect (or many other supported platforms), but here I'm just using board_folder to save it locally--you can also use this to save to dropbox/googledrive/etc. Once the board is created you write your model to a pin located there.
+
+```{r vetiver_setup, eval = FALSE, echo = TRUE}
+deployable_model <- xgb_fit |>  fit(training)
+
+#create vetiver object
+vet_model <- vetiver_model(deployable_model, 'final_model_large')
+
+model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
+
+#pin vetiver object to board
+model_board |>
+  vetiver_pin_write(vet_model)
+```
+
+
+I now have a model object that is ready to deploy. I'm just going to deploy it locally, but the process is quite similar if you want to deploy to AWS or something similar. You can also run this as a background job in rstudio so that you can keep using your console and still interact with the API locally.
+
+```{r deploy_model, eval = FALSE, echo = TRUE}
+v <- model_board |> 
+  vetiver_pin_read('final_model_large')
+
+# deploy pinned model locally
+pr() |> 
+  vetiver_api(v) |> 
+  pr_run(port = 8088)
+
+# access API predict endpoint
+endpoint <- vetiver_endpoint('http://127.0.0.1:8088/predict')
+
+```
+
+That's all it takes to deploy your API locally! We can feed data into it right away. I'll do that by grabbing 100 more books from my dataset and, after performing my cleaning and feature engineering, I can feed that into my API using our predict endpoint.
+
+```{r deployed_model_test_books, eval = FALSE}
+more_books <- monthly_checkouts |>
+  select(-ISBN) |>
+  build_base_dataset(condition = c(UsageClass == "Physical", MaterialType == 'BOOK',
+                              !if_any(everything(), is.na)),
+                variable = c(-UsageClass, -CheckoutType, -MaterialType,
+                             -Subjects))
+one_hundred_book_titles <- more_books |> 
+  group_by(title) |> 
+  summarise(total_checkouts = sum(checkouts)) |> 
+  arrange(desc(total_checkouts)) |> 
+  filter(between(row_number(), 2001, 2100)) |> 
+  pull(title)
+
+
+another_100_books <- more_books |> 
+  semi_join(data.frame(title = one_hundred_book_titles), join_by(title))
+
+featured_another_100 <- another_100_books |> 
+  add_features(add_rolling_avg_vars = TRUE,
+               add_lagged_vars = TRUE, 
+               g_vars = "title",
+               .n_lags = c(1, 2, 3, 6, 12),
+               .n_avgs = c(2, 3, 4, 5, 6, 12 ))
+
+model_board |>  pin_write(featured_another_100, name = 'dataset', title = '100 new books to test deployed model with')
+```
+
+
+```{r api_endpoint_test, eval = FALSE, echo = TRUE}
+
+# get sample of predictions
+deployment_predictions <- predict(endpoint, featured_another_100) |> 
+  zero_bound_predictions() |> 
+  mutate(.pred = round(.pred, 2)) |> 
+  bind_cols(featured_another_100)
+
+# look at just the last month of predictions
+sample_predictions <- deployment_predictions |> 
+  filter(checkout_year == 2025, checkout_month == 6) |> 
+  head(20) |> 
+  select(.pred, checkouts, title, year_month)
+  
+# build nice tables of predictions and metrics
+deployment_preds_table <- sample_predictions |> 
+  gt() |> 
+  format_table_header() |> 
+  cols_width(
+    title ~ px(300)
+  )
+
+gtsave(deployment_preds_table, 'deployment_preds_table.png')
+
+sample_metrics <- featured_another_100 |> 
+  bind_cols(.preds = predict(endpoint, featured_another_100) |> zero_bound_predictions()) |>
+  my_metrics(truth = checkouts, estimate = .pred) |> 
+  gt() |> 
+  format_table_header()
+
+gtsave(sample_metrics, 'deployment_sample_metrics.png')
+```
+
+@tbl-eleven shows that our model is still predicting quite well on this new subset of books.
+
+![Sample Predictions, API](deployment_preds_table.png){#tbl-eleven width=100%}
+
+If we calculate our performance metrics on this new slice of books, we are still well within the range we were seeing on our test set, so nothing appears to have gone awry in the setup.
+
+![Sample Metrics, API](deployment_sample_metrics.png){#tbl-twelve width=100%}
+
+And that's it! Our predict endpoint returns a vector of checkout predictions given a dataset of model features. From here you could hook this API into your dashboard or whatever else and the world is yours! Of course, this is no where close to a production ready pipeline. For one, the pipeline is a little awkward. If you remember from the variable importance plot, this model heavily relies on rolling averages and lag calculations to generate accurate predictions. Let's say Seattle gets a brand new title in its system. You need to do feature engineering to get the lags, rolling averages, etc. that feed into the model. With a brand new book, those lags and rolling averages are NA for the first n months. Xgboost can handle that just fine, but your model will perform quite badly on brand new books until those features can be calculated. And even if a book is not brand new, you will need to pull the last 12 months of data for each book you want to predict in order get generate the maximum lag and rolling average features. This can be quite expensive depending on where that data is stored and how you are pulling that data into the modeling pipeline.
+
+Aside from those awkward feature engineering and cold start problems, we haven't even begun to set up systems to monitor things like model drift or model performance over time. So it's fair to say this is just a barebones implementation, but still--look how easy it was to get this API up and running!
+
 
 As is always the case, this final model pipeline is just a tiny fraction of the paths I explored. Initially, I was pretty confident I wanted to approach this like a time series forecasting problem. Given a book and roughly 240 year_month observations, shouldn't I be able to predict, say, the next 3 months checkouts? Yes, but given that book checkouts typically look like the following plot, it's a little problematic. The data shifts levels pretty dramatically. It is also extremely difficult to predict just how popular a book will be upon release (without more data at least), but after the initial surge, almost all books settle into a 'base load' level. The part of the curve we are really interested in if we are predicting demand is that first year though. This level shifting curve, to my knowledge, isn't something ARIMA/ETS models are particularly great for, and even if they were, I'd need to fit a different model for each of the hundreds of thousands of books. Even with ARIMA being fast to fit, that's going to be prohibitively time consuming.
 
-```{r goldfinch_example}
+```{r goldfinch_example, eval = FALSE}
 goldfinch <- monthly_checkouts |> 
   filter_by_condition(UsageClass == "Physical", MaterialType == 'BOOK') |> 
   janitor::clean_names() |> 
@@ -1415,91 +1565,3 @@ goldfinch |>
        subtitle = 'Book checkouts spike after release, drop precipitously after about a year and then settle into relatively low levels')
   
 ```
-
-
-
-## Deploy Model
-
-As one final illustration, I want to set up an API for this model so that you could deploy this into the world and actually use it-maybe in a shiny app or some other website/dashboard. The easiest way to do this is with vetiver, pins, and plumber. First, you take the final, tuned model with the best parameters and you create a vetiver object that will contain all the information necessary to store, version and deploy the model. You then create a model board to write your model to. In a production setting, this would be something like board_s3 or board_rsconnect to deploy through Amazon AWS or Posit Connect (or many other supported platforms), but here I'm just using board_folder to save it locally--you can also use this to save to dropbox/googledrive/etc. Once the board is created you can just write your model to a pin located there.
-
-```{r save_model, eval = FALSE}
-# save version of model
-deployable_model <- xgb_fit |>  fit(training)
-
-vet_model <- vetiver_model(deployable_model, 'final_model_large')
-
-model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
-
-model_board |> 
-  vetiver_pin_write(vet_model)
-```
-
-With the model pinned, now it's fairly easy to deploy. I'm just going to run it locally and show you, but the process is quite similar if you want to deploy to AWS or something similar. You can also run this as a background job in rstudio so that you can keep using your console and still interact with the API locally.
-
-```{r deploy_model}
-v <- model_board |> 
-  vetiver_pin_read('final_model_large', version = '20250925T202148Z-1f6c9')
-
-pr() |> 
-  vetiver_api(v) |> 
-  pr_run(port = 8088)
-
-endpoint <- vetiver_endpoint('http://127.0.0.1:8088/predict')
-
-sample_books <- testing |> 
-  slice_head(n = 10)
-
-predict(endpoint, sample_books)
-```
-
-```{r}
-board <- board_folder('data/final', versioned = TRUE)
-testing_model <- board |>  pin_read('deployable_model', version = '20250925T220144Z-60b27')
-
-model_data <- board |> pin_read('dataset', version = '20250924T150811Z-9067c')
-
-books_split <- initial_time_split(model_data|> arrange(year_month), prop = .9)
-training <- training(books_split)
-testing <- testing(books_split)
-
-testing |> 
-  bind_cols(.preds = testing_model |>  predict(testing) |> zero_bound_predictions()) |>
-  my_metrics(truth = checkouts, estimate = .pred)
-
-temp_books <- monthly_checkouts |>
-  select(-ISBN) |>
-  build_base_dataset(condition = c(UsageClass == "Physical", MaterialType == 'BOOK',
-                              !if_any(everything(), is.na)),
-                variable = c(-UsageClass, -CheckoutType, -MaterialType,
-                             -Subjects))
-temp_sum <- temp_books |> 
-  group_by(title) |> 
-  summarise(total_checkouts = sum(checkouts)) |> 
-  arrange(desc(total_checkouts)) |> 
-  slice(2000:2100) |> 
-  pull(title)
-
-
-next_1000 <- temp_books |> 
-  semi_join(data.frame(title = temp_sum), join_by(title))
-
-featured_next_1000 <- next_1000 |> 
-  add_features(add_rolling_avg_vars = TRUE,
-               add_lagged_vars = TRUE, 
-               g_vars = "title",
-               .n_lags = c(1, 2, 3, 6, 12),
-               .n_avgs = c(2, 3, 4, 5, 6, 12 ))
-
-
-featured_next_1000 |> 
-  bind_cols(.preds = testing_model |>  predict(featured_next_1000) |> zero_bound_predictions()) |>
-  my_metrics(truth = checkouts, estimate = .pred)
-
-testing_model |> 
-  extract_fit_parsnip() |>
-  vip(geom = 'point')
-```
-
-And that's it! Predict returns a vector of checkout predictions given a dataset of model features. From here you could hook this API into your dashboard or whatever else and the world is yours! Of course, this is no where close to a production ready pipeline. For one, the pipeline is a little awkward. If you remember from the variable importance plot, this model heavily relies on rolling averages and lag calculations to generate accurate predictions. Let's say Seattle gets a brand new title in its system. You need to do feature engineering to get the lags, rolling averages, etc. that feed into the model. With a brand new book, those lags and rolling averages are NA for the first n months. Xgboost can handle that just fine, but your model will perform quite badly on brand new books until those features can be calculated. And even if a book is not brand new, you will need to pull the last 12 months of data for each book you want to predict in order get generate the maximum lag and rolling average features. This can be quite expensive depending on how you are pulling that data into the modeling pipeline.
-
-Aside from those awkward feature engineering and cold start problems, we haven't even begun to address anything like model drift or measuring model performance over time. So it's fair to say this is just a barebones implementation, but still--look how easy it was to get this API up and running!

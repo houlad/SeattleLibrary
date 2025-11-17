@@ -1,0 +1,10 @@
+file: deployable_model.rds
+file_size: 917285
+pin_hash: b7b499e2e556a9be
+type: rds
+title: 'deployable_model: a pinned list'
+description: ~
+tags: ~
+urls: ~
+created: 20250923T200610Z
+api_version: 1

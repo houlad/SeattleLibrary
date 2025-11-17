@@ -1,0 +1,17 @@
+file: final_model_large.rds
+file_size: 2518281
+pin_hash: 1f6c9ca3d8328246
+type: rds
+title: 'final_model_large: a pinned list'
+description: A xgboost regression modeling workflow
+tags: ~
+urls: ~
+created: 20250925T202148Z
+api_version: 1
+user:
+  required_pkgs:
+  - parsnip
+  - recipes
+  - workflows
+  - xgboost
+  renv_lock: ~
