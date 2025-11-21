@@ -1102,7 +1102,7 @@ digital_fiction_v_nonfiction_yearly <- temp |>
 
 ![Digital books, Fiction v Nonfiction](digital_fiction_v_nonfiction.png){#fig-twelve width=100%}
 
-If you look at the yearly breakdown in @fig-thirteen, it even looks like that preference is increasing over time. However, after looking into it, I don't think that is true. The yearly increase in digital checkouts as a whole is increasing faster than the increase in fiction v nonfiction checkouts, so I think the apparent increase is a mainly a mirage caused by the fast growth of digital checkouts as a whole.
+If you look at the yearly breakdown in @fig-thirteen, it even looks like that preference is increasing over time. However, after looking into it, I don't think that is true. The yearly increase in digital checkouts as a whole is increasing faster than the increase in fiction v nonfiction checkouts, so I think the apparent increase is mainly a mirage caused by the fast growth of digital checkouts as a whole.
 
 ![Digital Checkouts, Yearly](digital_fiction_v_nonfiction_yearly.png){#fig-thirteen width=100%}
 
@@ -1143,7 +1143,9 @@ I was partially right!. The list is roughly an even split between authors of kid
 
 ## Are People Reading Less Broadly?
 
-The final question I want to explore in the exploratory analysis is also probably the trickiest. We've seen in the exploration so far that some books are orders of magnitude more popular than others. My hypothesis is that these popular books are becoming *more* popular over time. In other words, I think these popular books are eating up a greater share of total checkouts than they used to- ie they are reading less broadly than they used to.  What exactly do I mean by 'reading less broadly'? I am interested in whether there has been a shift over the years in terms of how broad a swath of books people read. I think one way to answer this question is to look at the 'share' of a book or books in terms of total checkouts. For example, does it take 100 different books to add up to 50% of all book checkouts? Or does it take 1000 different books to get to 50%? If it is 1000 books, then people are reading more broadly than if it takes 100. In the extreme, if there was only one book, that book would be 100% of total checkouts, and people wouldn't be reading very broadly at all. I am interested in how much, or if, this book share has changed throughout the lifespan of the dataset. Let's munge some data and see.
+The final question I want to address in the exploratory analysis is also probably the most confusing. We've seen in the exploration so far that some books are orders of magnitude more popular than others. My hypothesis is that these ultra popular books are becoming *more* popular over time, eating up ever greater shares of the total number of checkouts. Since people only have a finite amount of time in their day, I'm assuming that if they read one of these popular books, they miss out on reading one less popular book, and thus, the population as a whole would be reading from a smaller subset of books. That's my idea of what 'reading less broadly' means.
+
+I think one way to answer this question is to look at a book(or books) 'share' of total checkouts. For example, does it take the top 100 most checked out books to add up to 50% of all checkouts? Or does it take 1000 books to get to 50%? If it is 1000 books, then the population is reading more broadly than if it takes 100. In the extreme, if all checkouts were of the same book, that book would be 100% of total checkouts, and the population wouldn't be reading very broadly at all. I am interested in how much, or if, this book share has changed throughout the lifespan of the dataset. Let's munge some data and see.
 
 ```{r proportion_of_checkouts_plot, eval = FALSE}
 proportion_of_total_checkouts <- monthly_checkouts |> 
@@ -1220,11 +1222,11 @@ proportion_of_total_checkouts_plot <- (all_books + top_100) +
 ```
 ![Proportion of Total Checkouts](proportion_of_total_checkouts_plot.png){#fig-fifteen width=100%}
 
-@fig-fifteen is a really interesting plot, though it might be slightly confusing at first. In plot A, I took all books and looked at what share of total checkouts they sum to. So if there were 1000 total checkouts and book A was checked out 150 times, its share of total checkouts would be 15%. If I had a second book, book B, that was checked out 100 times, that books checkout share is 10%. After doing that for every book, if you order the books by checkout share, you can cumulatively sum them up and see the share of the total that X number of books represents. So in my toy example, book A and book B make up 25% of the total checkouts of all books. Plot A is doing that with all the books in the dataset, but breaking it down by year. In plot A, we can see that earlier years are shifted to the left, meaning there are fewer books. So plot A indicates that people are reading *more* broadly. In 2007, it took roughly 25k different books to make up 75% of total checkouts. By 2024, that number has gone *up* to roughly 50k different books representing 75% of checkouts. This holds true even when you break down the totals into ebooks, books and audiobooks.
+@fig-fifteen is a really interesting plot, though it might be slightly confusing at first. In plot A, I took all books and looked at their share of total checkouts. If there were 1000 total checkouts and book A was checked out 150 times, its share of total checkouts would be 15%. If I had a second book, book B, that was checked out 100 times, that books checkout share is 10%. After doing that for every book, if you order the books by checkout share, you can cumulatively sum them up and see the share of total checkouts that X number of books represents. So in my toy example, book A and book B make up 25% of the total checkouts of all books. Plot A is showing the results of doing just that with all the books in the dataset, but also breaking it down by year. In plot A, we can see that earlier years are shifted to the left, meaning there are fewer books. So plot A indicates that people are reading *more* broadly. In 2007, it took roughly 25k different books to make up 75% of total checkouts. By 2024, that number has gone *up* to roughly 50k different books representing 75% of checkouts. This holds true even when you break down the totals into ebooks, books, and audiobooks.
 
-Plot B offers a caveat though. Plot B essentially zooms in to look at just the top 100 most checked out books and asks what percentage of checkouts do those 100 books represent? We can get that percentage by looking where the lines intersect with the black line on the right. Here, we see that later years in our dataset hover around 5.5-6% while earlier years are more in the 3-4% range. So the small subset of the most popular books(think NYT bestsellers) account for about twice the share of total checkouts as they did a little over a decade ago.
+Plot B offers a caveat. Plot B essentially zooms in to look at just the top 100 most checked out books and ask what percentage of checkouts do those 100 books represent? We can get that percentage by looking where the curves intersect with the black line on the right. Here, we see that later years in our dataset hover around 5.5-6% while earlier years are more in the 3-4% range. So the small subset of the most popular books(think NYT bestsellers) represent about twice the share of total checkouts as they did a little over a decade ago.
 
-So which is it then? Are people reading more or less broadly? I think a good way to think of this is that yes, popular books are more popular, but our reading distributions have fatter tails. There are all sorts of reasons both of these things can simultaneously be true. Maybe major publishers are advertising tentpole books more aggressively and for longer time periods, but also publishing is cheaper so a wider list of titles are available to checkout. I would need to bring in some other data sources, like perhaps the inventory of the library, to really dive into this, but that's an analysis for another day.
+So which is it then? Are people reading more or less broadly? I think a good way to think of this is that yes, popular books are more popular, but our reading distributions have fatter tails. There are all sorts of reasons both of these things can simultaneously be true. Maybe major publishers are advertising tentpole books more aggressively and for longer time periods, but also publishing is cheaper(not to mention the viability of self publishing these days) so a wider list of titles are available to checkout. I would need to bring in some other data sources, like perhaps the inventory of the library, to really dive into this, but that's an analysis for another day.
 
 Long story short, people seem to be reading a little *more* broadly, but the most popular books are a little *more* popular.
 
@@ -1234,7 +1236,7 @@ Initially, I was mainly excited to do some visualization with this rich dataset.
 
 ## Building the Modeling Dataset
 
-First things first, I need to build a dataset. This pipeline does multiple things at once:
+First things first, I need to build a modeling dataset. My feature engineering pipeline does multiple things at once:
 
 -   Remove ISBN variable: ISBN is almost completely NA and not useful
 -   build_base_dataset[^helper-function-script]: Filters to physical books only and only those with complete information
@@ -1267,16 +1269,19 @@ top_1000_books_new_features <- monthly_checkouts |>
 # pins::pin_write(model_board, name = 'dataset', x = top_1000_books_new_features, type = 'rds')
 ```
 
+One very important thing to note right away is that I'm only using a tiny fraction of the total books in this modeling dataset. I'm building my model with data from only the top 1000 books--in a dataset with nearly 900,000 titles! The main reason is time. With the rudimentary model pipeline I built here, it takes on the order of 10x longer to train the model on 1000 books versus 10 books. Adding even more books gets time prohibitive *very* quickly. More importantly though, while this extra data does improve the model, it doesn't improve it *that* much and it's definitely not worth the time for this prototype.
 
 ## Building an Xgboost Model
 
 After the dataset is built, I use a standard tidymodels framework to build an xgboost model. I'm not going to go into details about the workflow, but the full pipeline is below if you are interested.  Why did I choose an xgboost model? They typically perform well on this sort of problem and they are quite easy to implement. In many circumstances they are at or near the state of the art for forecasting. 
 
-Another approach I tried that seems like it should work, but ultimately I couldn't get to perform well was hierarchical time series modeling. Think about stores like Walmart. They have thousands of products that they want to forecast sales for. How do they do that? Let's say we are forecasting toothbrushes specifically. Well, they can take toothbrushes and look at past sales and then use something like ARIMA/ETS to forecast the sales for that toothbrush in the future. The problem is that Walmart sells thousands(tens of thousands?) of different products. Even with relatively simple ARIMA models, it quickly becomes extremely computationally demanding to forecast each individual item. Not to mention they are going to want to update those forecasts frequently! 
+Another approach I tried that seems like it should work, but I couldn't get to perform well was hierarchical time series modeling. Think about stores like Walmart. They have thousands of products that they want to forecast sales for. How do they do that? Let's say we are forecasting toothbrushes specifically. Well, they could take toothbrushes and look at past sales and then use something like ARIMA/ETS to forecast the sales for that toothbrush in the future. The problem is that Walmart sells thousands(tens of thousands?) of different products. Even with relatively simple ARIMA models, it quickly becomes extremely computationally demanding to forecast each individual item. Not to mention they are going to want to update those forecasts frequently! 
 
-That problem sounds somewhat familiar! So how do they do it? Luckily for Walmart, their products fit nicely into hierarchies/groups. A toothbrush can be categorized like so: personal care product -\> oral care product -\> toothbrushes -\> manual toothbrush -\> specific toothbrush. Every product Walmart sells can be organized into a hierarchy like that and then [hierarchical time series forecasting](https://otexts.com/fpp3/hts.html) will use that structure to provide a coherent forecast that is feasible for a huge number of products. In theory, this should have worked pretty well for forecasting books, but it didn't. I'm not totally sure why, but my guess is that I didn't have a great group/hierarchical structure that fit the data. I tried something like publisher -\> author -\> title, but that isn't a very rich hierarchy nor was it particularly rigid--titles often have multiple publishers, different authors, different publication dates, etc.  All of those little subtlties made building a good hierarchical structure difficult. Whatever the reason, I was able to out perform my hierarchical time series models pretty quickly with a xgboost model. Another potential reason ARIMA forecasting failed to perform was the structure of a typical, popular book time series. @fig-sixteen shows the monthly time series plot for checkouts of 'The Goldfinch'. This structure is very common with popular books- an enormous initial peak, followed by a slow decline into a steady state of a couple dozen checkouts a month at most. This level shift is not something ARIMA is well suited for. With differencing perhaps you could make it work, but I don't think it's the most natural approach.
+That problem sounds somewhat familiar! So how do they do it? Luckily for Walmart, their products fit nicely into hierarchies/groups. A toothbrush can be categorized like so: *personal care product -\> oral care product -\> toothbrushes -\> manual toothbrush -\> specific toothbrush*. Every product Walmart sells can be organized into a hierarchy like that and then [hierarchical time series forecasting](https://otexts.com/fpp3/hts.html) will use that structure to provide a coherent forecast that is feasible for a huge number of products. In theory, I think this should have worked pretty well for forecasting books, but it didn't. I'm not totally sure why, but my guess is that I didn't have a great group/hierarchical structure that fit the data. I tried something like *publisher -\> author -\> title*, but that isn't a very rich hierarchy nor was it particularly rigid--titles often have multiple publishers/authors/publication dates/etc.  All of those little subtlties made building a good hierarchical structure difficult. Whatever the reason, I was able to outperform my hierarchical time series models pretty quickly with a xgboost model. 
 
-```{r goldfinch_example, eval = FALSE}
+Another potential reason ARIMA forecasting failed to perform was the structure of a typical, popular book time series. @fig-sixteen shows the monthly time series plot for checkouts of 'The Goldfinch'. This structure is very common with popular books- an enormous initial peak, followed by a fairly rapid decline into a steady state of a couple dozen checkouts a month at most. This level shift is not something ARIMA is well suited for. With differencing perhaps you could make it work, but I don't think it's the most natural approach.
+
+```{r goldfinch_example, eval = FALSE, include = FALSE}
 goldfinch <- monthly_checkouts |> 
   filter_by_condition(UsageClass == "Physical", MaterialType == 'BOOK') |> 
   janitor::clean_names() |> 
@@ -1391,7 +1396,7 @@ model_board |>
   vetiver_pin_write(vet_model)
 ```
 
-In a nutshell, the pipeline takes the top 1,000 book dataset I generated earlier and then 
+In a nutshell, the pipeline I actually used takes the top 1,000 book dataset I generated earlier and then 
   
   1) Splits the data into training/testing sets
   2) Builds a xgboost model recipe with all the features I want
@@ -1399,7 +1404,7 @@ In a nutshell, the pipeline takes the top 1,000 book dataset I generated earlier
   4) Builds a tuning grid with model features I need to tune - # of trees, tree depth, learning rate, etc
   5) Adds all of this to a model workflow 
   6) Trains the model in parallel with cross validation and the metrics I tell it to use
-  7) Selects the best parameters according to tuning and the finalize the workflow and fit the model on the training set
+  7) Selects the best parameters according to tuning, finalizes the workflow, and fits the model on the training set
   8) Saves the model in a pin for later deployment and use
 
 ## Evaluate the Model
@@ -1437,7 +1442,7 @@ gtsave(xgboost_error_metrics_table, 'xgboost_error_metrics_table.png')
 
 ![Model Error Metrics](xgboost_error_metrics_table.png){#tbl-eight}
 
-As you can see in @tbl-eight, with a relatively small chunk of the dataset, 1000 books, I'm able to predict checkout counts to within about 3 books a month. We can also look at it as we are off by an average of about % on our predictions. That seems pretty solid to me! One important caveat is that I have zero-bounded our predictions. You can't have a negative amount of books checked out, but the model can predict negative values. After fitting the model and generating the predictions, I simply ran through them and set any negative prediction to be equal to zero instead. There is probably a more elegant solution, but I think it makes sense in this use case.
+As you can see in @tbl-eight, with a relatively small chunk of the dataset, 1000 books, I'm able to predict checkout counts to within about 3 books a month. We can also look at it as we are off by an average of about 5% on our predictions. That seems pretty solid to me! One important caveat is that I have zero-bounded our predictions. You can't have a negative amount of books checked out, but the model can predict negative values. After fitting the model and generating the predictions, I simply ran through them and set any negative prediction to be equal to zero instead. There is probably a more elegant solution, but I think it makes sense in this use case.
 
 ```{r prediction_glance, eval = FALSE}
 #View a portion of the predictions
@@ -1459,11 +1464,11 @@ example_predictions <- testing |>
 gtsave(example_predictions, 'example_predictions.png')
 ```
 
-@tbl-nine might be a little easier to interpret. This is just a snippet of the testing set with model predictions shown next to actual checkout counts. As you can see, these predictions seem pretty good.
+If metrics make your eyes glaze over, @tbl-nine shows some of our model predictions versus the real checkout counts. As you can see, these predictions are not bad at all.
 
 ![Model Predictions](example_predictions.png){#tbl-nine}
 
-Aside from pure model performance, I also am interested in what features are important in my model. I can visualize this with some VIP(variable importance plots). 
+Aside from pure model performance, I also am interested in what features are important in my model. I can visualize this with some variable importance plots(VIP).
 
 ```{r vip_plot, eval = FALSE}
 #Plot the most important features in the model
@@ -1481,11 +1486,13 @@ ggsave('vip_plot.png', vip_plot)
 
 ![Variable Importance Plot](vip_plot.png){#fig-seventeen width=100%}
 
-@fig-seventeen shows the rolling two month average as far and away the most important feature. Intuitively, that makes a ton of sense to me--what will next months checkouts be? Take the last two months checkouts, average them and predict that. That could be a good base model on its own-in fact it is essentially the MA part of ARIMA time series forecasting. After the two month rolling average, we see that checkout standard deviation and the first lag variable rank very highly, followed by a bunch of variables of similar importance. One thing I did find surprising is that dummy variables identifying whether a book was a childrens book or whether the month was a summer month or christmas month didn't really help the model at all.
+@fig-seventeen shows the *rolling two month average* as far and away the most important feature. Intuitively, that makes a ton of sense to me--what will next months checkouts be? Take the last two months checkouts, average them and predict that. That could be a good base model on its own-in fact it is essentially the MA(moving average) part of ARIMA time series forecasting. After the two month rolling average, we see that *checkout standard deviation* and the *lag 1* rank very highly, followed by a bunch of variables of similar importance. One thing I did find surprising is that dummy variables identifying whether a book was a childrens book or whether the month was a summer month or christmas month didn't really help the model at all.
 
 ## Deploy Model
 
-Now that I have a working, semi-decent model, I want to set up an API so that I could deploy this into the world and actually use it-maybe in a shiny app or some other website/dashboard. The easiest way to do this is with vetiver, pins, and plumber. After you have your final, tuned model with your best parameters, you create a vetiver object that will contain all the information necessary to store, version and deploy the model. You then create a model board to write your model to. In a production setting, this would be something like board_s3 or board_rsconnect to deploy through Amazon AWS or Posit Connect (or many other supported platforms), but here I'm just using board_folder to save it locally--you can also use this to save to dropbox/googledrive/etc. Once the board is created you write your model to a pin located there.
+Now that I have a working, semi-decent model, I want to set up an API so that I could deploy this into the world and actually use it-maybe in a shiny app or some other website/dashboard. The easiest way to do this is with vetiver, pins, and plumber. After you have your final, tuned model with your best parameters, you create a vetiver object that will contain all the information necessary to store, version and deploy the model. You then create a model board to write your model to. In a production setting, this would be something like board_s3 or board_rsconnect to deploy through Amazon AWS or Posit Connect (or many other supported platforms), but here I'm just using board_folder to save it locally[^pins-tidbit]. Once the board is created you write your model to a pin located there.
+
+[^pins-tidbit]: You can also use this to save to dropbox/googledrive/etc.
 
 ```{r vetiver_setup, eval = FALSE, echo = TRUE}
 #| code-fold: show
@@ -1494,6 +1501,7 @@ deployable_model <- xgb_fit |>  fit(training)
 #create vetiver object
 vet_model <- vetiver_model(deployable_model, 'final_model_large')
 
+#create model board
 model_board <- pins::board_folder(path = 'data/final', versioned = TRUE)
 
 #pin vetiver object to board
@@ -1519,7 +1527,7 @@ endpoint <- vetiver_endpoint('http://127.0.0.1:8088/predict')
 
 ```
 
-That's all it takes to deploy your API locally! We can feed data into it right away. I'll do that by grabbing 100 more books from my dataset and, after performing my cleaning and feature engineering, I can feed that into my API using our predict endpoint.
+That's all it takes to deploy your API locally! We can feed data into it right away. I'll do that by grabbing 100 more books from my dataset and, after performing my cleaning and feature engineering, I can feed that into my API using our *predict* endpoint.
 
 ```{r deployed_model_test_books, eval = FALSE}
 more_books <- monthly_checkouts |>
@@ -1528,6 +1536,7 @@ more_books <- monthly_checkouts |>
                               !if_any(everything(), is.na)),
                 variable = c(-UsageClass, -CheckoutType, -MaterialType,
                              -Subjects))
+
 one_hundred_book_titles <- more_books |> 
   group_by(title) |> 
   summarise(total_checkouts = sum(checkouts)) |> 
@@ -1552,7 +1561,7 @@ model_board |>  pin_write(featured_another_100, name = 'dataset', title = '100 n
 
 ```{r api_endpoint_test, eval = FALSE, echo = TRUE}
 
-# get sample of predictions
+# get new predictions
 deployment_predictions <- predict(endpoint, featured_another_100) |> 
   zero_bound_predictions() |> 
   mutate(.pred = round(.pred, 2)) |> 
@@ -1572,7 +1581,7 @@ deployment_preds_table <- sample_predictions |>
     title ~ px(300)
   )
 
-gtsave(deployment_preds_table, 'deployment_preds_table.png')
+# gtsave(deployment_preds_table, 'deployment_preds_table.png')
 
 sample_metrics <- featured_another_100 |> 
   bind_cols(.preds = predict(endpoint, featured_another_100) |> zero_bound_predictions()) |>
@@ -1583,7 +1592,7 @@ sample_metrics <- featured_another_100 |>
 gtsave(sample_metrics, 'deployment_sample_metrics.png')
 ```
 
-@tbl-ten shows that our model predictions on a new sample of books.
+@tbl-ten shows our models predictions on a new sample of books.
 
 ![Sample Predictions, API](deployment_preds_table.png){#tbl-ten}
 
@@ -1591,11 +1600,11 @@ If we calculate our performance metrics on this new slice of books, we are still
 
 ![Sample Metrics, API](deployment_sample_metrics.png){#tbl-eleven}
 
-And that's it! Our predict endpoint returns a vector of checkout predictions given a dataset of model features. From here you could hook this API into your dashboard or whatever else and the world is yours! Of course, this is no where close to a production ready pipeline. For one, the pipeline is a little awkward. If you remember from the variable importance plot, this model heavily relies on rolling averages and lag calculations to generate accurate predictions. Let's say Seattle gets a brand new title in its system. You need to do feature engineering to get the lags, rolling averages, etc. that feed into the model. With a brand new book, those lags and rolling averages are NA for the first n months. Xgboost can handle that just fine, but your model will perform quite badly on brand new books until those features can be calculated. And even if a book is not brand new, you will need to pull the last 12 months of data for each book you want to predict in order generate the maximum lag and rolling average features. This can be quite expensive depending on where that data is stored and how you are pulling that data into the modeling pipeline.
+And that's it! Our predict endpoint returns a vector of checkout predictions given a dataset of model features. From here you could hook this API into your dashboard or whatever else and the world is yours! Of course, this is no where close to a production ready pipeline. For one, the pipeline is a little awkward. If you remember from the variable importance plot, this model heavily relies on rolling averages and lag calculations to generate accurate predictions. Let's say Seattle gets a brand new title in its system. You need to do feature engineering to get the lags, rolling averages, etc. that feed into the model. With a brand new book, those lags and rolling averages are NA for the first N months. Xgboost can handle that just fine, but your model will perform quite badly on brand new books until those features can be calculated. Even if a book is not brand new, you will need to pull the last 12 months of data for each book you want to predict in order generate the maximum lag and rolling average features. This can be quite expensive depending on where that data is stored and how you are pulling that data into the modeling pipeline.
 
 Aside from those awkward feature engineering and cold start problems, I haven't even begun to set up systems to monitor things like model drift or model performance over time. It's fair to say this is just a barebones implementation, but still--look how easy it was to get this API up and running!
 
-On the positive side of things, aside from how well the model performs, it also manages to do this while only being trained on the thousand most checked out books in the dataset. There are almost certainly performance gains to be had just from using more data in training, but a nice benefit of this xgboost modeling framework versus ARIMA is that we don't have to care about individual book titles. Title isn't even used as a feature in the model! That means, unlike if I used ARIMA, I don't have to train a different model for each book. My xgboost model overall might be significantly more complicated, but it is a single model that works for any book which simplifies things in a lot of ways.
+On the positive side of things, the model really performs quite well, even with the small training set. It struggles with accurate predictions the first time it sees a book, but that cold start problem is very tricky across industries. After that first appearance, the model starts turning out nice, almost eerily accurate predictions, and there are definitely performance gains to be had just from using more data in training! Another nice benefit of this xgboost modeling framework versus ARIMA is that we don't have to care about individual book titles. Title isn't even used as a feature in the model! That means, unlike if I used ARIMA, I don't have to train a different model for each book. My xgboost model overall might be significantly more complicated, but it is a single model that works for any book which simplifies things in a lot of ways.
 
 
 

@@ -92,10 +92,8 @@ zero_bound_predictions <- function(df){
     mutate(.pred = if_else(.pred < 0, 0, .pred))
 }
 
-#TODO Plot theme function
 
 
-#TODO Plotting function/s
 
 #Summing the total count of books when a book is labeled with multiple ItemTypes
 
